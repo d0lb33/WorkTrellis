@@ -3,7 +3,19 @@
 All notable changes to WorkTrellis are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
-## 0.2.1 - Unreleased
+## 0.2.2 - 2026-07-30
+
+### Added
+
+- An explicit warning before a worktree starts a second machine-scoped Compose
+  compatibility variant, including the resolved `compose.env` keys to compare.
+
+### Fixed
+
+- Multiplexed child processes can no longer erase sibling terminal output with
+  destructive clear-screen control sequences.
+
+## 0.2.1 - 2026-07-30
 
 ### Added
 

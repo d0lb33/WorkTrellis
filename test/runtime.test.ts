@@ -12,6 +12,10 @@ import { buildContext } from "../src/core/context";
 import { resolveEnv } from "../src/core/env-resolve";
 import { loadWorkspaceLocalConfig } from "../src/core/local-config";
 import { renderStack } from "../src/platform/compose-render";
+import {
+  describeMachineStackVariants,
+  findRunningMachineStackVariants,
+} from "../src/platform/stack";
 import { resolveResources } from "../src/resources";
 import {
   defineResourceAdapter,
@@ -19,7 +23,10 @@ import {
   redisNamespace,
   s3Bucket,
 } from "../src/resources";
-import { Supervisor } from "../src/supervise/supervisor";
+import {
+  sanitizeMultiplexedOutput,
+  Supervisor,
+} from "../src/supervise/supervisor";
 import { resolveUrl } from "../src/url/provider";
 import { claimPortlessAlias } from "../src/url/portless";
 import type {
@@ -88,6 +95,14 @@ describe("WorkTrellis environment precedence", () => {
 });
 
 describe("WorkTrellis process supervision", () => {
+  it("prevents one multiplexed child from clearing sibling output", () => {
+    expect(
+      sanitizeMultiplexedOutput(
+        "\u001bc\u001b[2J\u001b[H\u001b[35mworker restarted\u001b[39m",
+      ),
+    ).toBe("\u001b[35mworker restarted\u001b[39m");
+  });
+
   it("does not start a dependent when its dependency fails readiness", async () => {
     const directory = temporaryDirectory("worktrellis-supervisor");
     const dependentMarker = path.join(directory, "dependent-started");
@@ -244,6 +259,68 @@ describe("WorkTrellis scoped Compose plans", () => {
     expect(workspaceFirst.environment.WORKTRELLIS_PORT_GOTENBERG).toBe(
       String(workspaceFirst.ports.gotenberg),
     );
+  });
+
+  it("explains when resolved Compose inputs would start another machine variant", () => {
+    const projectRoot = temporaryDirectory("worktrellis-machine-variant");
+    const home = temporaryDirectory("worktrellis-machine-variant-home");
+    vi.stubEnv("WORKTRELLIS_HOME", home);
+    fs.writeFileSync(
+      path.join(projectRoot, "compose.machine.yml"),
+      "services:\n  database:\n    image: postgres:16-alpine\n",
+    );
+    const spec = {
+      name: "infrastructure",
+      scope: "machine" as const,
+      files: ["compose.machine.yml"],
+      env: {
+        DB_PASSWORD: ({
+          baseEnv,
+        }: {
+          baseEnv: Readonly<Record<string, string>>;
+        }) => baseEnv.DB_PASSWORD,
+      },
+      ports: {
+        database: { service: "database", containerPort: 5432 },
+      },
+    };
+    const existing = renderStack({
+      spec,
+      projectRoot,
+      identity: identity(),
+      baseEnv: { DB_PASSWORD: "first" },
+    });
+    const current = renderStack({
+      spec,
+      projectRoot,
+      identity: identity({ slug: "second-cafebabe" }),
+      baseEnv: { DB_PASSWORD: "second" },
+    });
+    const existingDirectory = path.join(home, "stacks", existing.stackId);
+    fs.mkdirSync(existingDirectory, { recursive: true });
+    for (const file of existing.files) {
+      fs.writeFileSync(path.join(existingDirectory, file.name), file.contents);
+    }
+    fs.writeFileSync(
+      path.join(existingDirectory, "files.json"),
+      JSON.stringify(existing.files.map((file) => file.name)),
+    );
+
+    const variants = findRunningMachineStackVariants(
+      current,
+      new Set([existing.stackId]),
+    );
+    const explanation = describeMachineStackVariants(current, variants);
+
+    expect(current.stackId).not.toBe(existing.stackId);
+    expect(variants).toEqual([
+      { stackId: existing.stackId, projectFilesMatch: true },
+    ]);
+    expect(explanation).toContain("another set of containers and volumes");
+    expect(explanation).toContain("DB_PASSWORD");
+    expect(explanation).toContain("compare the worktrees' .env files");
+    expect(explanation).not.toContain("first");
+    expect(explanation).not.toContain("second");
   });
 
   it("requires project-owned Compose files instead of a runtime preset", async () => {

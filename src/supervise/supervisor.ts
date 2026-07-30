@@ -49,6 +49,17 @@ const RESTART_WINDOW_MS = 60_000;
 const STARTUP_GRACE_MS = 3_000;
 const DEFAULT_MAX_RESTARTS = 5;
 
+/**
+ * A supervised child shares the terminal with its siblings. Destructive screen
+ * controls therefore cannot be honored in multiplexed mode: a watcher restart
+ * must not erase the app's output. SGR color controls remain untouched.
+ */
+export function sanitizeMultiplexedOutput(value: string): string {
+  return value
+    .replace(/\u001bc/g, "")
+    .replace(/\u001b\[(?:[0-9;?]*[HJf]|[0-9;]*[JK])/g, "");
+}
+
 function resolveCommand(
   command: Command,
   projectRoot: string,
@@ -277,19 +288,22 @@ export class Supervisor {
   }
 
   private write(entry: SupervisedProcess, line: string): void {
-    this.log(entry, `${line}\n`);
+    const safeLine = sanitizeMultiplexedOutput(line);
+    if (line.length > 0 && safeLine.length === 0) return;
 
-    if (this.checkReady(entry, line)) {
+    this.log(entry, `${safeLine}\n`);
+
+    if (this.checkReady(entry, safeLine)) {
       entry.state = "ready";
     }
 
     if (this.options.prefix === false) {
-      info(line);
+      info(safeLine);
       return;
     }
 
     const label = entry.color(entry.spec.name.padEnd(this.labelWidth));
-    info(`${label} ${c.gray("|")} ${line}`);
+    info(`${label} ${c.gray("|")} ${safeLine}`);
   }
 
   private checkReady(entry: SupervisedProcess, line: string): boolean {

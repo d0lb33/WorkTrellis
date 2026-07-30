@@ -22,6 +22,8 @@ export interface RenderedStack {
   files: RenderedComposeFile[];
   ports: Record<string, number>;
   portSpecs: Record<string, ComposePortSpec>;
+  /** Resolved project inputs only; excludes generated port variables. */
+  composeEnvironment: Record<string, string>;
   environment: Record<string, string>;
   projectDirectory: string;
   specHash: string;
@@ -101,6 +103,7 @@ export function renderStack(options: {
     files,
     ports,
     portSpecs,
+    composeEnvironment: composeEnv,
     environment,
     projectDirectory,
     specHash,

@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+
 import type {
   ComposeContext,
   ComposeStackSpec,
@@ -6,9 +9,12 @@ import type {
 } from "../types";
 import { conflictError, WorkTrellisError } from "../core/errors";
 import { withLock } from "../core/lock";
+import { homePaths } from "../core/state";
 import { c, step, warn } from "../util/log";
+import { readJsonFile } from "../util/fs";
+import { run } from "../util/proc";
 import { ComposeStack } from "./compose";
-import { renderStack } from "./compose-render";
+import { renderStack, type RenderedStack } from "./compose-render";
 import {
   assertDaemonRunning,
   detectEngine,
@@ -36,6 +42,119 @@ export interface EnsureResult {
   remoteEngineNote?: string;
 }
 
+export interface MachineStackVariant {
+  stackId: string;
+  projectFilesMatch: boolean;
+}
+
+function machineStackPrefix(rendered: RenderedStack): string | null {
+  const prefix = `worktrellis-machine-${rendered.name}-`;
+  // Machine stack IDs normally end with the first eight characters of their
+  // compatibility hash. Very long names are compacted as a whole and cannot
+  // be grouped safely without persisted metadata.
+  return prefix.length + 8 <= 63 ? prefix : null;
+}
+
+function projectFilesMatch(
+  rendered: RenderedStack,
+  existingDirectory: string,
+): boolean {
+  const current = rendered.files.filter(
+    (file) => file.name !== "99-worktrellis-ports.compose.yml",
+  );
+  const names =
+    readJsonFile<string[]>(path.join(existingDirectory, "files.json"))?.filter(
+      (name) => name !== "99-worktrellis-ports.compose.yml",
+    ) ?? [];
+
+  if (
+    names.length !== current.length ||
+    names.some((name, index) => name !== current[index]?.name)
+  ) {
+    return false;
+  }
+
+  try {
+    return current.every(
+      (file) =>
+        fs.readFileSync(path.join(existingDirectory, file.name), "utf8") ===
+        file.contents,
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function findRunningMachineStackVariants(
+  rendered: RenderedStack,
+  runningProjectIds: ReadonlySet<string>,
+): MachineStackVariant[] {
+  if (rendered.scope !== "machine") return [];
+  const prefix = machineStackPrefix(rendered);
+  if (!prefix) return [];
+
+  return [...runningProjectIds]
+    .filter(
+      (stackId) =>
+        stackId !== rendered.stackId &&
+        stackId.startsWith(prefix) &&
+        /^[a-f0-9]{8}$/.test(stackId.slice(prefix.length)),
+    )
+    .sort()
+    .map((stackId) => ({
+      stackId,
+      projectFilesMatch: projectFilesMatch(
+        rendered,
+        homePaths.stack(stackId),
+      ),
+    }));
+}
+
+export function describeMachineStackVariants(
+  rendered: RenderedStack,
+  variants: MachineStackVariant[],
+): string {
+  const ids = variants.map((variant) => variant.stackId).join(", ");
+  const projectFilesMatch = variants.every(
+    (variant) => variant.projectFilesMatch,
+  );
+  const envKeys = Object.keys(rendered.composeEnvironment).sort();
+
+  const difference = projectFilesMatch
+    ? `The project Compose files match, so named-port declarations or resolved \`compose.env\` values differ${
+        envKeys.length > 0 ? ` (${envKeys.join(", ")})` : ""
+      }. If those values read \`baseEnv\`, compare the worktrees' .env files.`
+    : "The project Compose definitions differ from the running variant.";
+
+  return [
+    `Another machine-scoped "${rendered.name}" variant is already running: ${ids}.`,
+    `This checkout resolved ${rendered.stackId}, so starting it creates another set of containers and volumes.`,
+    difference,
+  ].join("\n    ");
+}
+
+async function runningComposeProjectIds(
+  engine: ContainerEngine,
+): Promise<Set<string>> {
+  const result = await run(
+    engine.cli,
+    [
+      "ps",
+      "--format",
+      '{{.Label "com.docker.compose.project"}}',
+    ],
+    { quiet: true, timeoutMs: 30_000 },
+  ).catch(() => null);
+
+  if (!result || result.code !== 0) return new Set();
+  return new Set(
+    result.stdout
+      .split(/\r?\n/)
+      .map((value) => value.trim())
+      .filter(Boolean),
+  );
+}
+
 export async function ensureInfrastructure(
   specs: ComposeStackSpec[],
   options: {
@@ -52,6 +171,9 @@ export async function ensureInfrastructure(
   await assertDaemonRunning(engine);
 
   const context = await engineContext(engine);
+  const runningProjects = startIfStopped
+    ? await runningComposeProjectIds(engine)
+    : new Set<string>();
   const remoteEngineNote =
     context?.isRemote === true
       ? `container engine is remote (${context.name} -> ${context.endpoint}); published ports live on that host`
@@ -73,6 +195,14 @@ export async function ensureInfrastructure(
     const { rendered } = stack;
     const specChanged = stack.sync();
     let healthy = await stack.isHealthy();
+    const machineVariants = findRunningMachineStackVariants(
+      rendered,
+      runningProjects,
+    );
+
+    if (machineVariants.length > 0) {
+      warn(describeMachineStackVariants(rendered, machineVariants));
+    }
 
     if (!healthy && startIfStopped) {
       await assertPortsAvailable(spec, stack, engine);

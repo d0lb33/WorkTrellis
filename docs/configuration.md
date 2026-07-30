@@ -71,6 +71,14 @@ Available scopes:
 | `repository` | Shared by all worktrees of one Git repository |
 | `workspace` | Separate for every worktree |
 
+Machine compatibility includes project Compose contents, named port
+declarations, and resolved `compose[].env` values. If a worktree resolves a
+different compatibility identity while another variant is running,
+WorkTrellis warns before starting an additional set of containers and volumes.
+When the Compose files match, the warning lists the environment keys to compare
+without exposing their values. This commonly identifies `.env` differences
+when `compose[].env` callbacks read `baseEnv`.
+
 Machine- and repository-scoped definitions run from their stable directory
 under `WORKTRELLIS_HOME`, so compatible worktrees do not fight over a project
 directory. Keep shared-stack Compose files self-contained: avoid relative bind

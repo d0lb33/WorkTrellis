@@ -245,6 +245,12 @@ checks. Shared-stack Compose interpolation inputs can be declared in
 `compose[].env`, including callbacks that read the project's read-only
 `baseEnv`.
 
+Machine-scoped stacks are shared only when their Compose files, named ports,
+and resolved `compose[].env` values are compatible. Before starting a second
+variant, WorkTrellis reports the already-running stack, the additional stack it
+would create, and which environment keys should be compared. Secret values are
+never printed.
+
 ## Environment precedence
 
 From lowest to highest priority:
