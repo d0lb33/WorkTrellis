@@ -3,6 +3,13 @@
 All notable changes to WorkTrellis are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## 0.2.3 - 2026-07-30
+
+### Changed
+
+- `worktrellis info` now reports each exact derived Docker Compose project name
+  and its scope, including the same data in JSON output.
+
 ## 0.2.2 - 2026-07-30
 
 ### Added

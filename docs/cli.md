@@ -114,8 +114,10 @@ the current worktree.
 
 ### `worktrellis info`
 
-Prints the current worktree identity, configured resource names, and
-foreground-process ports.
+Prints the current worktree identity, exact derived Docker Compose project
+names and scopes, and foreground-process ports. The Compose names are the
+projects under which Docker groups service containers; configured application
+processes run on the host under WorkTrellis supervision.
 
 ### `worktrellis list`
 

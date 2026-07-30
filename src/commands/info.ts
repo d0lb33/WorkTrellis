@@ -1,8 +1,10 @@
 import path from "node:path";
 
-import { buildContext } from "../core/context";
+import { buildContext, type CommandContext } from "../core/context";
 import { EXIT } from "../core/errors";
 import { readWorkspaceRecords } from "../core/state";
+import { renderStack } from "../platform/compose-render";
+import type { ResolvedComposeStack } from "../types";
 import { c, heading, info, table } from "../util/log";
 
 export interface InfoOptions {
@@ -11,9 +13,35 @@ export interface InfoOptions {
   json?: boolean;
 }
 
+export function resolveInfoComposeProjects(
+  context: Pick<
+    CommandContext,
+    "config" | "projectRoot" | "identity" | "baseEnv"
+  >,
+): ResolvedComposeStack[] {
+  const baseEnv = Object.freeze(Object.fromEntries(context.baseEnv));
+
+  return context.config.compose.map((spec) => {
+    const rendered = renderStack({
+      spec,
+      projectRoot: context.projectRoot,
+      identity: context.identity,
+      baseEnv,
+    });
+
+    return {
+      name: rendered.name,
+      scope: rendered.scope,
+      projectName: rendered.stackId,
+      ports: Object.freeze({ ...rendered.ports }),
+    };
+  });
+}
+
 export async function runInfo(options: InfoOptions): Promise<number> {
   const context = await buildContext(options);
   const { identity } = context;
+  const composeProjects = resolveInfoComposeProjects(context);
 
   if (options.json) {
     console.log(
@@ -24,6 +52,7 @@ export async function runInfo(options: InfoOptions): Promise<number> {
           projectRoot: context.projectRoot,
           baseEnvFile: context.baseEnvPath,
           stateDirectory: context.paths.root,
+          composeProjects,
         },
         null,
         2,
@@ -49,6 +78,24 @@ export async function runInfo(options: InfoOptions): Promise<number> {
     ["fingerprint", identity.fingerprint],
     ["repo key", identity.repoKey],
   ]);
+
+  info("");
+  heading("  Compose projects");
+  if (composeProjects.length === 0) {
+    info(c.gray("  none"));
+  } else {
+    table(
+      composeProjects.map((stack) => [
+        `${stack.name} (${stack.scope})`,
+        stack.projectName,
+      ]),
+    );
+  }
+  info(
+    c.gray(
+      "  Docker groups service containers under these project names; app processes run on the host.",
+    ),
+  );
 
   info("");
   heading("  Process ports");

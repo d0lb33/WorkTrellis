@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { resolveInfoComposeProjects } from "../src/commands/info";
 import { resolvePackageManager } from "../src/commands/misc";
 import { parseArgs } from "../src/core/args";
 import { loadConfig } from "../src/core/config";
@@ -186,6 +187,53 @@ describe("WorkTrellis process supervision", () => {
 });
 
 describe("WorkTrellis scoped Compose plans", () => {
+  it("reports the exact Docker Compose project names expected for this workspace", () => {
+    const projectRoot = temporaryDirectory("worktrellis-info-compose");
+    fs.writeFileSync(
+      path.join(projectRoot, "compose.machine.yml"),
+      "services:\n  database:\n    image: postgres:16-alpine\n",
+    );
+    fs.writeFileSync(
+      path.join(projectRoot, "compose.workspace.yml"),
+      "services:\n  search:\n    image: opensearchproject/opensearch:latest\n",
+    );
+
+    const workspace = identity();
+    const compose = [
+      {
+        name: "infrastructure",
+        scope: "machine" as const,
+        files: ["compose.machine.yml"],
+      },
+      {
+        name: "search",
+        scope: "workspace" as const,
+        files: ["compose.workspace.yml"],
+      },
+    ];
+    const projects = resolveInfoComposeProjects({
+      config: { compose } as WorkTrellisConfig,
+      projectRoot,
+      identity: workspace,
+      baseEnv: new Map(),
+    });
+
+    expect(projects).toEqual([
+      expect.objectContaining({
+        name: "infrastructure",
+        scope: "machine",
+        projectName: expect.stringMatching(
+          /^worktrellis-machine-infrastructure-[a-f0-9]{8}$/,
+        ),
+      }),
+      expect.objectContaining({
+        name: "search",
+        scope: "workspace",
+        projectName: `worktrellis-${workspace.project}-${workspace.slug}-search`,
+      }),
+    ]);
+  });
+
   it("shares machine stacks but separates workspace stacks", () => {
     const projectRoot = temporaryDirectory("worktrellis-compose");
     const machineFile = path.join(projectRoot, "compose.machine.yml");
