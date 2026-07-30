@@ -1,0 +1,70 @@
+{
+  "name": "worktrellis",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "One host, many worktrees: shared local services with isolated databases, storage, ports, and environment.",
+  "license": "MIT",
+  "author": "Jonathan Dolbee",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/d0lb33/WorkTrellis.git"
+  },
+  "homepage": "https://github.com/d0lb33/WorkTrellis#readme",
+  "bugs": {
+    "url": "https://github.com/d0lb33/WorkTrellis/issues"
+  },
+  "keywords": [
+    "git",
+    "worktree",
+    "development",
+    "docker",
+    "postgres",
+    "redis",
+    "cli"
+  ],
+  "sideEffects": false,
+  "bin": {
+    "worktrellis": "./bin/worktrellis.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "bin",
+    "dist",
+    "docs",
+    "src",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts src/cli.ts --format esm --dts --clean --out-dir dist --sourcemap --platform node --target node22",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "prepare": "npm run build"
+  },
+  "dependencies": {
+    "pg": "^8.18.0",
+    "tsx": "^4.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.19",
+    "@types/pg": "^8.16.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.8.2",
+    "vitest": "^4.0.18"
+  },
+  "packageManager": "pnpm@10.12.1",
+  "publishConfig": {
+    "access": "public"
+  }
+}
