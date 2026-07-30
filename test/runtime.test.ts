@@ -8,24 +8,22 @@ import { resolvePackageManager } from "../src/commands/misc";
 import { parseArgs } from "../src/core/args";
 import { loadConfig } from "../src/core/config";
 import { resolveEnv } from "../src/core/env-resolve";
+import { renderStack } from "../src/platform/compose-render";
+import { resolveResources } from "../src/resources";
 import {
-  workspacePaths,
-  worktrellisHome,
-} from "../src/core/state";
-import { ComposeStack } from "../src/platform/compose";
-import {
-  renderLegacyStack,
-  stackIdFor,
-} from "../src/platform/compose-render";
-import { stackFor } from "../src/platform/stack";
+  defineResourceAdapter,
+  postgresDatabase,
+  redisNamespace,
+  s3Bucket,
+} from "../src/resources";
 import { Supervisor } from "../src/supervise/supervisor";
 import { resolveUrl } from "../src/url/provider";
 import type {
+  ComposeContext,
   EnvContext,
-  ServiceSpec,
+  WorkspaceIdentity,
   WorkTrellisConfig,
 } from "../src/types";
-import type { ContainerEngine } from "../src/platform/engine";
 
 const temporaryDirectories: string[] = [];
 
@@ -33,6 +31,21 @@ function temporaryDirectory(label: string): string {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), `${label}-`));
   temporaryDirectories.push(directory);
   return directory;
+}
+
+function identity(overrides: Partial<WorkspaceIdentity> = {}): WorkspaceIdentity {
+  return {
+    root: "/worktrees/example",
+    repoKey: "repo-key",
+    isLinkedWorktree: true,
+    branch: "feature/test",
+    head: "abc123",
+    project: "test",
+    slug: "feature-test-deadbeef",
+    fingerprint: "deadbeef",
+    ports: { app: 3210 },
+    ...overrides,
+  };
 }
 
 afterEach(() => {
@@ -44,14 +57,14 @@ afterEach(() => {
 });
 
 describe("WorkTrellis environment precedence", () => {
-  it("lets exported values override both generated keys and base-env secrets", () => {
+  it("lets exported values override generated keys and base-env secrets", () => {
     vi.stubEnv("WORKTRELLIS_TEST_SECRET", "from-process");
     vi.stubEnv("WORKTRELLIS_TEST_OWNED", "owned-from-process");
 
     const config: WorkTrellisConfig = {
-      configVersion: 1,
+      configVersion: 2,
       project: "test",
-      services: [],
+      compose: [],
       processes: [],
       env: () => ({ WORKTRELLIS_TEST_OWNED: "owned-from-config" }),
     };
@@ -71,7 +84,7 @@ describe("WorkTrellis environment precedence", () => {
 });
 
 describe("WorkTrellis process supervision", () => {
-  it("resolves when a dependency fails before becoming ready", async () => {
+  it("does not start a dependent when its dependency fails readiness", async () => {
     const directory = temporaryDirectory("worktrellis-supervisor");
     const dependentMarker = path.join(directory, "dependent-started");
     const supervisor = new Supervisor({
@@ -87,10 +100,7 @@ describe("WorkTrellis process supervision", () => {
     supervisor.add(
       {
         name: "dependency",
-        command: {
-          bin: process.execPath,
-          args: ["-e", "process.exit(1)"],
-        },
+        command: { bin: process.execPath, args: ["-e", "process.exit(1)"] },
         readyWhen: { logMatch: /never/, timeoutMs: 500 },
       },
       0,
@@ -121,9 +131,9 @@ describe("WorkTrellis process supervision", () => {
     fs.writeFileSync(
       configPath,
       `export default {
-        configVersion: 1,
+        configVersion: 2,
         project: "test",
-        services: [],
+        compose: [],
         env: () => ({}),
         processes: [
           { name: "app", command: { bin: process.execPath, args: [] }, dependsOn: ["worker"] },
@@ -132,80 +142,239 @@ describe("WorkTrellis process supervision", () => {
       };`,
     );
 
-    await expect(
-      loadConfig({ cwd: directory, configPath }),
-    ).rejects.toThrow(/dependency cycle: app -> worker -> app/);
+    await expect(loadConfig({ cwd: directory, configPath })).rejects.toThrow(
+      /dependency cycle: app -> worker -> app/,
+    );
   });
 
-  it("rejects missing and unknown configuration versions", async () => {
+  it("rejects configuration version 1", async () => {
     const directory = temporaryDirectory("worktrellis-config-version");
-    const configPath = path.join(directory, "worktrellis.config.mjs");
-    const base = {
-      project: "test",
-      services: [],
-      env: "() => ({})",
-      processes: [],
-    };
-
     fs.writeFileSync(
-      configPath,
+      path.join(directory, "worktrellis.config.mjs"),
       `export default {
-        project: ${JSON.stringify(base.project)},
-        services: [],
-        env: ${base.env},
+        configVersion: 1,
+        project: "test",
+        compose: [],
+        env: () => ({}),
         processes: []
       };`,
     );
+
     await expect(loadConfig({ cwd: directory })).rejects.toThrow(
-      /unsupported `configVersion` undefined/,
-    );
-
-    const futureDirectory = temporaryDirectory(
-      "worktrellis-config-version-future",
-    );
-    const futureConfigPath = path.join(
-      futureDirectory,
-      "worktrellis.config.mjs",
-    );
-    fs.writeFileSync(
-      futureConfigPath,
-      `export default {
-        configVersion: 2,
-        project: ${JSON.stringify(base.project)},
-        services: [],
-        env: ${base.env},
-        processes: []
-      };`,
-    );
-    await expect(loadConfig({ cwd: futureDirectory })).rejects.toThrow(
-      /unsupported `configVersion` 2/,
+      /requires `configVersion: 2`/,
     );
   });
 });
 
-describe("WorkTrellis state compatibility", () => {
-  it("uses legacy machine state when no renamed home exists", () => {
-    const directory = temporaryDirectory("worktrellis-state-home");
-    const legacy = path.join(directory, ".devstack");
-    fs.mkdirSync(legacy);
-    vi.spyOn(os, "homedir").mockReturnValue(directory);
-    vi.stubEnv("WORKTRELLIS_HOME", "");
-    vi.stubEnv("DEVSTACK_HOME", "");
+describe("WorkTrellis scoped Compose plans", () => {
+  it("shares machine stacks but separates workspace stacks", () => {
+    const projectRoot = temporaryDirectory("worktrellis-compose");
+    const machineFile = path.join(projectRoot, "compose.machine.yml");
+    fs.writeFileSync(
+      machineFile,
+      "services:\n  database:\n    image: postgres:16-alpine\n",
+    );
+    const first = identity();
+    const second = identity({
+      root: "/worktrees/second",
+      slug: "second-cafebabe",
+      fingerprint: "cafebabe",
+    });
 
-    expect(worktrellisHome()).toBe(legacy);
+    const machineFirst = renderStack({
+      spec: {
+        name: "infrastructure",
+        scope: "machine",
+        files: ["compose.machine.yml"],
+        ports: {
+          database: { service: "database", containerPort: 5432 },
+        },
+      },
+      projectRoot,
+      identity: first,
+    });
+    const machineSecond = renderStack({
+      spec: {
+        name: "infrastructure",
+        scope: "machine",
+        files: ["compose.machine.yml"],
+        ports: {
+          database: { service: "database", containerPort: 5432 },
+        },
+      },
+      projectRoot,
+      identity: second,
+    });
+    expect(machineFirst.stackId).toBe(machineSecond.stackId);
+
+    const composeFile = path.join(projectRoot, "compose.dev.yml");
+    fs.writeFileSync(
+      composeFile,
+      "services:\n  gotenberg:\n    image: gotenberg/gotenberg:8\n",
+    );
+    const workspaceSpec = {
+      name: "documents",
+      scope: "workspace" as const,
+      files: ["compose.dev.yml"],
+      ports: {
+        gotenberg: {
+          service: "gotenberg",
+          containerPort: 3000,
+        },
+      },
+    };
+    const workspaceFirst = renderStack({
+      spec: workspaceSpec,
+      projectRoot,
+      identity: first,
+    });
+    const workspaceSecond = renderStack({
+      spec: workspaceSpec,
+      projectRoot,
+      identity: second,
+    });
+    expect(workspaceFirst.stackId).not.toBe(workspaceSecond.stackId);
+    expect(
+      workspaceFirst.files.at(-1)?.contents,
+    ).toContain('"gotenberg"');
+    expect(workspaceFirst.environment.WORKTRELLIS_PORT_GOTENBERG).toBe(
+      String(workspaceFirst.ports.gotenberg),
+    );
   });
 
-  it("copies legacy workspace state forward without deleting the backup", () => {
-    const directory = temporaryDirectory("worktrellis-state-workspace");
-    const legacy = path.join(directory, ".devstack");
-    fs.mkdirSync(legacy);
-    fs.writeFileSync(path.join(legacy, "workspace.json"), '{"slug":"old"}');
+  it("requires project-owned Compose files instead of a runtime preset", async () => {
+    const directory = temporaryDirectory("worktrellis-project-compose");
+    fs.writeFileSync(
+      path.join(directory, "worktrellis.config.mjs"),
+      `export default {
+        configVersion: 2,
+        project: "test",
+        compose: [{ name: "infrastructure", scope: "machine", files: [] }],
+        env: () => ({}),
+        processes: []
+      };`,
+    );
 
-    const paths = workspacePaths(directory);
+    await expect(loadConfig({ cwd: directory })).rejects.toThrow(
+      /needs at least one project-owned file/,
+    );
+  });
 
-    expect(paths.root).toBe(path.join(directory, ".worktrellis"));
-    expect(fs.readFileSync(paths.workspace, "utf8")).toBe('{"slug":"old"}');
-    expect(fs.existsSync(path.join(legacy, "workspace.json"))).toBe(true);
+  it("resolves explicit Compose inputs from base env into compatibility identity", () => {
+    const projectRoot = temporaryDirectory("worktrellis-compose-env");
+    fs.writeFileSync(
+      path.join(projectRoot, "compose.yml"),
+      "services:\n  database:\n    image: postgres:16-alpine\n",
+    );
+    const spec = {
+      name: "infrastructure",
+      scope: "machine" as const,
+      files: ["compose.yml"],
+      env: {
+        POSTGRES_PASSWORD: ({
+          baseEnv,
+        }: {
+          baseEnv: Readonly<Record<string, string>>;
+        }) => baseEnv.POSTGRES_PASSWORD,
+      },
+    };
+
+    const first = renderStack({
+      spec,
+      projectRoot,
+      identity: identity(),
+      baseEnv: { POSTGRES_PASSWORD: "first" },
+    });
+    const second = renderStack({
+      spec,
+      projectRoot,
+      identity: identity(),
+      baseEnv: { POSTGRES_PASSWORD: "second" },
+    });
+
+    expect(first.environment.POSTGRES_PASSWORD).toBe("first");
+    expect(first.stackId).not.toBe(second.stackId);
+  });
+});
+
+describe("WorkTrellis resource isolation", () => {
+  it("resolves database, Redis namespace, and bucket from one workspace", () => {
+    const compose: ComposeContext = {
+      stacks: {
+        standard: {
+          name: "standard",
+          scope: "machine",
+          projectName: "worktrellis-machine-standard",
+          ports: { postgres: 5432, redis: 6379, minio: 9000 },
+        },
+      },
+      url: () => "",
+    };
+    const resources = resolveResources({
+      identity: identity(),
+      compose,
+      adapters: {
+        database: postgresDatabase({
+          endpoint: { stack: "standard", port: "postgres" },
+          isolation: "database",
+        }),
+        cache: redisNamespace({
+          endpoint: { stack: "standard", port: "redis" },
+          isolation: "namespace",
+        }),
+        storage: s3Bucket({
+          endpoint: { stack: "standard", port: "minio" },
+          isolation: "bucket",
+        }),
+      },
+    });
+
+    expect(resources.database.database).toBe(
+      "test_feature_test_deadbeef",
+    );
+    expect(resources.cache.prefix).toBe(
+      "{test:feature-test-deadbeef}",
+    );
+    expect(resources.storage.bucket).toBe(
+      "test-feature-test-deadbeef",
+    );
+  });
+
+  it("keeps custom adapter names and resolved values intact", () => {
+    const compose: ComposeContext = {
+      stacks: {
+        search: {
+          name: "search",
+          scope: "workspace",
+          projectName: "worktrellis-test-search",
+          ports: { api: 9200 },
+        },
+      },
+      url: () => "",
+    };
+    const adapter = defineResourceAdapter({
+      kind: "search-index",
+      isolation: "index",
+      endpoint: { stack: "search", port: "api" },
+      resolve: ({ workspace, endpoint, baseEnv }) => ({
+        url: endpoint.url(),
+        index: `${workspace.project}-${workspace.slug}`,
+        token: baseEnv.SEARCH_TOKEN,
+      }),
+    });
+
+    const resources = resolveResources({
+      identity: identity(),
+      compose,
+      adapters: { documents: adapter },
+      baseEnv: { SEARCH_TOKEN: "local-secret" },
+    });
+
+    expect(resources.documents).toEqual({
+      url: "http://127.0.0.1:9200",
+      index: "test-feature-test-deadbeef",
+      token: "local-secret",
+    });
   });
 });
 
@@ -218,7 +387,6 @@ describe("WorkTrellis package scripts", () => {
       "./backups/latest.dump",
       "--clean",
     ]);
-
     expect(parsed.positionals).toEqual(["db:restore"]);
     expect(parsed.passthrough).toEqual([
       "./backups/latest.dump",
@@ -226,7 +394,17 @@ describe("WorkTrellis package scripts", () => {
     ]);
   });
 
-  it("uses the inherited package-manager JavaScript entry instead of a local dependency", () => {
+  it("parses stack-qualified machine port overrides", () => {
+    const parsed = parseArgs([
+      "services",
+      "adopt",
+      "--infrastructure.database-port",
+      "55432",
+    ]);
+    expect(parsed.flags.get("infrastructure.database-port")).toBe("55432");
+  });
+
+  it("uses the inherited package-manager JavaScript entry", () => {
     const directory = temporaryDirectory("worktrellis-package-manager");
     const runner = path.join(directory, "pnpm.cjs");
     fs.writeFileSync(runner, "");
@@ -244,89 +422,18 @@ describe("WorkTrellis package scripts", () => {
   });
 });
 
-describe("WorkTrellis shared service compatibility", () => {
-  const engine: ContainerEngine = {
-    name: "docker",
-    cli: "docker",
-    compose: ["docker", "compose"],
-  };
-  const postgres: ServiceSpec = { kind: "postgres", version: "16" };
-  const ports = { main: 5432 };
-
-  it("keeps the stack identity when only a machine port override changes", () => {
-    expect(stackIdFor(postgres, { main: 5432 })).toBe(
-      stackIdFor(postgres, { main: 5544 }),
-    );
-    expect(
-      stackIdFor({ ...postgres, port: 5544 }, { main: 5544 }),
-    ).not.toBe(stackIdFor(postgres, { main: 5544 }));
-  });
-
-  it("reuses an exactly matching legacy stack so existing volumes survive upgrades", () => {
-    const home = temporaryDirectory("worktrellis-home");
-    vi.stubEnv("WORKTRELLIS_HOME", home);
-
-    const legacy = new ComposeStack(
-      engine,
-      renderLegacyStack(postgres, ports),
-    );
-    legacy.sync();
-
-    const selected = stackFor(engine, postgres, ports);
-    expect(selected.rendered.stackId).toBe(legacy.rendered.stackId);
-    expect(selected.matchesDefinition()).toBe(true);
-  });
-
-  it("does not reuse a legacy stack whose service definition differs", () => {
-    const home = temporaryDirectory("worktrellis-home");
-    vi.stubEnv("WORKTRELLIS_HOME", home);
-
-    const legacy = new ComposeStack(
-      engine,
-      renderLegacyStack(postgres, ports),
-    );
-    legacy.sync();
-
-    const incompatible: ServiceSpec = {
-      kind: "postgres",
-      version: "16",
-      password: "different",
-    };
-    const selected = stackFor(engine, incompatible, ports);
-
-    expect(selected.rendered.stackId).toBe(stackIdFor(incompatible, ports));
-    expect(selected.rendered.stackId).not.toBe(legacy.rendered.stackId);
-  });
-});
-
 describe("WorkTrellis URL inspection", () => {
   it("previews a worktree URL without registering a route", async () => {
-    const identity = {
-      root: "/worktrees/example",
-      repoKey: "repo-key",
-      isLinkedWorktree: true,
-      branch: "feature/test",
-      head: "abc123",
-      project: "test",
-      slug: "feature-test-deadbeef",
-      fingerprint: "deadbeef",
-      databaseName: "test_feature_test_deadbeef",
-      bucketName: "test-feature-test-deadbeef",
-      redisPrefix: "test:feature-test-deadbeef",
-      redisDb: 1,
-      ports: { app: 3210 },
-    };
     const config: WorkTrellisConfig = {
-      configVersion: 1,
+      configVersion: 2,
       project: "test",
-      services: [],
+      compose: [],
       processes: [],
       env: () => ({}),
       url: { provider: "portless" },
     };
-
     const resolved = await resolveUrl({
-      identity,
+      identity: identity(),
       projectRoot: temporaryDirectory("worktrellis-url"),
       config,
       peek: true,

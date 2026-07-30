@@ -4,7 +4,8 @@ import { pathToFileURL } from "node:url";
 
 import {
   WORKTRELLIS_CONFIG_VERSION,
-  type ServiceSpec,
+  type AnyResourceAdapter,
+  type ComposeStackSpec,
   type WorkTrellisConfig,
 } from "../types";
 import { WorkTrellisError, usageError } from "./errors";
@@ -19,15 +20,16 @@ const CONFIG_FILENAMES = [
 
 export interface LoadedConfig {
   config: Required<
-    Pick<WorkTrellisConfig, "configVersion" | "project" | "services" | "env" | "processes">
+    Pick<
+      WorkTrellisConfig,
+      "configVersion" | "project" | "compose" | "env" | "processes"
+    >
   > &
     WorkTrellisConfig;
-  /** Directory containing the config file — the project root. */
   projectRoot: string;
   configPath: string;
 }
 
-/** Walk up from `startDir` looking for a WorkTrellis config file. */
 export function findConfigFile(startDir: string): string | null {
   let current = path.resolve(startDir);
 
@@ -82,10 +84,8 @@ export async function loadConfig(options: {
     );
   }
 
-  const config = validate(loaded as WorkTrellisConfig, configPath);
-
   return {
-    config,
+    config: validate(loaded as WorkTrellisConfig, configPath),
     projectRoot: path.dirname(configPath),
     configPath,
   };
@@ -99,8 +99,8 @@ function validate(
 
   if (config.configVersion !== WORKTRELLIS_CONFIG_VERSION) {
     usageError(
-      `${where}: unsupported \`configVersion\` ${JSON.stringify(config.configVersion)}.`,
-      `Set \`configVersion: ${WORKTRELLIS_CONFIG_VERSION}\`. Configuration versions change only when the file contract has a breaking change.`,
+      `${where}: this release requires \`configVersion: ${WORKTRELLIS_CONFIG_VERSION}\`; received ${JSON.stringify(config.configVersion)}.`,
+      "Configuration v1 is intentionally not supported. Migrate the configuration before upgrading WorkTrellis.",
     );
   }
 
@@ -109,22 +109,168 @@ function validate(
   }
   assertProjectName(config.project);
 
-  if (!Array.isArray(config.services)) {
-    usageError(`${where}: \`services\` is required and must be an array.`);
+  if (!Array.isArray(config.compose)) {
+    usageError(`${where}: \`compose\` is required and must be an array.`);
   }
-  assertUniqueServiceKinds(config.services, where);
+  validateCompose(config.compose, where);
 
   if (typeof config.env !== "function") {
     usageError(
       `${where}: \`env\` is required and must be a function.`,
-      "It receives the resolved workspace, service endpoints, and URL context, and returns the keys WorkTrellis owns.",
+      "It receives workspace identity, Compose endpoints, isolated resources, and the application URL.",
     );
   }
 
   if (!Array.isArray(config.processes)) {
     usageError(`${where}: \`processes\` is required and must be an array.`);
   }
+  validateProcesses(config, where);
 
+  const stackNames = new Set(config.compose.map((stack) => stack.name));
+  for (const [name, resource] of Object.entries(config.resources ?? {})) {
+    validateResource(name, resource, stackNames, config.compose, where);
+  }
+
+  if (config.db) {
+    const adapter = config.resources?.[config.db.resource];
+    if (!adapter) {
+      usageError(
+        `${where}: \`db.resource\` references unknown resource "${config.db.resource}".`,
+      );
+    }
+    if (adapter.kind !== "postgres-database") {
+      usageError(
+        `${where}: \`db.resource\` must reference a postgresDatabase() adapter.`,
+      );
+    }
+  }
+
+  return config as LoadedConfig["config"];
+}
+
+function validateCompose(stacks: ComposeStackSpec[], where: string): void {
+  const names = new Set<string>();
+  for (const stack of stacks) {
+    if (!/^[a-z][a-z0-9-]*$/.test(stack.name)) {
+      usageError(
+        `${where}: Compose stack name ${JSON.stringify(stack.name)} is invalid.`,
+        "Use a lowercase DNS label beginning with a letter.",
+      );
+    }
+    if (names.has(stack.name)) {
+      usageError(`${where}: duplicate Compose stack name "${stack.name}".`);
+    }
+    names.add(stack.name);
+
+    if (!["machine", "repository", "workspace"].includes(stack.scope)) {
+      usageError(
+        `${where}: Compose stack "${stack.name}" has invalid scope ${JSON.stringify(stack.scope)}.`,
+      );
+    }
+    if (!Array.isArray(stack.files) || stack.files.length === 0) {
+      usageError(
+        `${where}: Compose stack "${stack.name}" needs at least one project-owned file.`,
+      );
+    }
+    for (const file of stack.files) {
+      if (typeof file !== "string" || file.trim() === "") {
+        usageError(
+          `${where}: Compose stack "${stack.name}" contains an invalid file path.`,
+        );
+      }
+    }
+
+    const portNames = new Set<string>();
+    for (const [portName, port] of Object.entries(stack.ports ?? {})) {
+      if (!/^[a-z][a-zA-Z0-9]*$/.test(portName)) {
+        usageError(
+          `${where}: port name ${JSON.stringify(portName)} in stack "${stack.name}" is invalid.`,
+          "Use a lower camel-case identifier such as `gotenberg` or `mailpitUi`.",
+        );
+      }
+      if (portNames.has(portName)) {
+        usageError(`${where}: duplicate port "${portName}" in stack "${stack.name}".`);
+      }
+      portNames.add(portName);
+      if (
+        typeof port.service !== "string" ||
+        port.service.trim() === "" ||
+        !Number.isInteger(port.containerPort) ||
+        port.containerPort <= 0 ||
+        port.containerPort > 65_535
+      ) {
+        usageError(
+          `${where}: port "${stack.name}.${portName}" needs a service and a containerPort from 1 to 65535.`,
+        );
+      }
+      if (
+        port.protocol !== undefined &&
+        port.protocol !== "tcp" &&
+        port.protocol !== "udp"
+      ) {
+        usageError(
+          `${where}: port "${stack.name}.${portName}" has invalid protocol ${JSON.stringify(port.protocol)}.`,
+        );
+      }
+      if (
+        port.probe !== undefined &&
+        !["none", "tcp", "http", "postgres", "redis", "smtp"].includes(
+          port.probe.kind,
+        )
+      ) {
+        usageError(
+          `${where}: port "${stack.name}.${portName}" has an invalid probe.`,
+        );
+      }
+      if (
+        port.hostPort !== undefined &&
+        (!Number.isInteger(port.hostPort) ||
+          port.hostPort <= 0 ||
+          port.hostPort > 65_535)
+      ) {
+        usageError(`${where}: invalid hostPort for "${stack.name}.${portName}".`);
+      }
+    }
+  }
+}
+
+function validateResource(
+  name: string,
+  resource: AnyResourceAdapter,
+  stackNames: Set<string>,
+  stacks: ComposeStackSpec[],
+  where: string,
+): void {
+  if (
+    !resource ||
+    typeof resource !== "object" ||
+    typeof resource.kind !== "string" ||
+    typeof resource.isolation !== "string" ||
+    typeof resource.resolve !== "function" ||
+    !resource.endpoint ||
+    typeof resource.endpoint.stack !== "string" ||
+    typeof resource.endpoint.port !== "string"
+  ) {
+    usageError(
+      `${where}: resource "${name}" is not a valid resource adapter.`,
+      "Use a built-in helper such as postgresDatabase(), redisNamespace(), or s3Bucket(), or defineResourceAdapter().",
+    );
+  }
+  if (!stackNames.has(resource.endpoint.stack)) {
+    usageError(
+      `${where}: resource "${name}" references unknown Compose stack "${resource.endpoint.stack}".`,
+    );
+  }
+  const stack = stacks.find((entry) => entry.name === resource.endpoint.stack)!;
+  const ports = new Set(Object.keys(stack.ports ?? {}));
+  if (!ports.has(resource.endpoint.port)) {
+    usageError(
+      `${where}: resource "${name}" references undeclared port "${resource.endpoint.stack}.${resource.endpoint.port}".`,
+    );
+  }
+}
+
+function validateProcesses(config: WorkTrellisConfig, where: string): void {
   const names = new Set<string>();
   for (const process of config.processes) {
     if (!process.name) {
@@ -145,16 +291,14 @@ function validate(
       }
     }
   }
-  assertAcyclicProcessDependencies(config.processes, where);
 
+  assertAcyclicProcessDependencies(config.processes, where);
   const appProcesses = config.processes.filter((entry) => entry.bindsAppPort);
   if (appProcesses.length > 1) {
     usageError(
       `${where}: ${appProcesses.length} processes set \`bindsAppPort\`; only one can bind the app port.`,
     );
   }
-
-  return config as LoadedConfig["config"];
 }
 
 function assertAcyclicProcessDependencies(
@@ -167,11 +311,14 @@ function assertAcyclicProcessDependencies(
 
   const visit = (name: string): void => {
     if (complete.has(name)) return;
-
     const cycleAt = visiting.indexOf(name);
     if (cycleAt !== -1) {
-      const cycle = [...visiting.slice(cycleAt), name].join(" -> ");
-      usageError(`${where}: process dependency cycle: ${cycle}.`);
+      usageError(
+        `${where}: process dependency cycle: ${[
+          ...visiting.slice(cycleAt),
+          name,
+        ].join(" -> ")}.`,
+      );
     }
 
     visiting.push(name);
@@ -183,17 +330,4 @@ function assertAcyclicProcessDependencies(
   };
 
   for (const process of processes) visit(process.name);
-}
-
-function assertUniqueServiceKinds(services: ServiceSpec[], where: string): void {
-  const seen = new Set<string>();
-  for (const service of services) {
-    if (seen.has(service.kind)) {
-      usageError(
-        `${where}: service kind "${service.kind}" is declared more than once.`,
-        "A project uses one instance of each service kind; versions are chosen per machine.",
-      );
-    }
-    seen.add(service.kind);
-  }
 }

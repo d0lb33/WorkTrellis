@@ -1,13 +1,12 @@
 # Publishing
 
-## One-time setup
+## Repository setup
 
-1. Publish `0.1.0` interactively once to reserve the unscoped npm name.
-2. In the npm package settings, configure a GitHub Actions trusted publisher:
+1. In the npm package settings, configure a GitHub Actions trusted publisher:
    - repository owner and name: `d0lb33/WorkTrellis`;
    - workflow filename: `publish.yml`;
    - allowed action: `npm publish`.
-3. Enable GitHub private vulnerability reporting and branch protection.
+2. Enable GitHub private vulnerability reporting and branch protection.
 
 The release workflow uses npm trusted publishing with OIDC. It has no
 long-lived npm token and receives only `contents: read` and `id-token: write`.
@@ -27,8 +26,10 @@ long-lived npm token and receives only `contents: read` and `id-token: write`.
    npm pack --dry-run
    ```
 
-5. Merge the release commit.
-6. Create a GitHub release tagged exactly `v<package-version>`.
+5. Inspect the packed file list and confirm `dist/`, `bin/`, `examples/`, and
+   public docs are present.
+6. Merge the release commit.
+7. Create a GitHub release tagged exactly `v<package-version>`.
 
 Publishing is then performed by `.github/workflows/publish.yml`. The workflow
 verifies that the release tag matches `package.json` before invoking npm.

@@ -29,9 +29,8 @@ const VALUE_EXPECTED = new Set([
 ]);
 
 function expectsValue(flag: string): boolean {
-  // Any `--<service>-port` flag takes a value, including the secondary ports
-  // such as `--minioConsole-port`, so the set above does not have to enumerate
-  // every service a project might declare.
+  // Any named-port override takes a value, including stack-qualified names, so
+  // the parser does not need to enumerate project infrastructure.
   return VALUE_EXPECTED.has(flag) || /-port$/.test(flag);
 }
 

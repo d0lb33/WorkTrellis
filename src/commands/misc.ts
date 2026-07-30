@@ -5,6 +5,8 @@ import { WorkTrellisError, EXIT, usageError } from "../core/errors";
 import { prepareWorkspace } from "../core/prepare";
 import { clearLiveRunState, readLiveRunState } from "../core/state";
 import { ensureWorkspaceDatabase } from "../resources/postgres";
+import { describeResources } from "../resources";
+import type { PostgresDatabase } from "../types";
 import { clearRunRecord, reapOrphans, readRunRecord } from "../supervise/reaper";
 import { c, heading, info, success, table, warn } from "../util/log";
 import {
@@ -69,7 +71,7 @@ export async function runDown(options: CommonOptions): Promise<number> {
     success("Stopped.");
   }
 
-  info(c.gray("  Shared services are still up — `pnpm services:down` stops those."));
+  info(c.gray("  Compose stacks are still up — `worktrellis services down` stops those."));
   return EXIT.ok;
 }
 
@@ -79,7 +81,7 @@ export async function runDown(options: CommonOptions): Promise<number> {
 
 export async function runStatus(options: CommonOptions): Promise<number> {
   const prepared = await peek(options);
-  const { context, services, url } = prepared;
+  const { context, infrastructure, url, envContext } = prepared;
   const live = readLiveRunState(context.paths.state);
   const running = live !== null && isProcessAlive(live.pid);
 
@@ -90,7 +92,8 @@ export async function runStatus(options: CommonOptions): Promise<number> {
           workspace: context.identity,
           running,
           url: url.url,
-          services: services.statuses,
+          compose: infrastructure.statuses,
+          resources: envContext.resources,
         },
         null,
         2,
@@ -105,15 +108,23 @@ export async function runStatus(options: CommonOptions): Promise<number> {
   table([
     ["state", running ? c.green(`running (pid ${live?.pid})`) : c.gray("stopped")],
     ["url", running ? c.cyan(url.url.appUrl) : c.gray(`${url.url.appUrl} (when started)`)],
-    ["database", context.identity.databaseName],
-    ["bucket", context.identity.bucketName],
+    ...describeResources(
+      context.config.resources,
+      envContext.resources,
+    ).map(
+      (resource) =>
+        [
+          resource.name,
+          resource.detail,
+        ] as [string, string],
+    ),
   ]);
 
   info("");
-  heading("  Services");
+  heading("  Compose");
   table(
-    services.statuses.map((status) => [
-      status.kind,
+    infrastructure.statuses.map((status) => [
+      `${status.name} (${status.scope})`,
       !status.running
         ? c.red("stopped")
         : status.reachable
@@ -332,14 +343,21 @@ export async function runDb(
   options: CommonOptions & { subcommand: string | null; seed?: string },
 ): Promise<number> {
   const prepared = await peek(options);
-  const { context, services, env } = prepared;
+  const { context, env, envContext } = prepared;
 
-  const postgres = services.endpoints.postgres;
-  if (!postgres) {
-    throw new WorkTrellisError("This project does not declare a postgres service.");
+  const resourceName = context.config.db?.resource;
+  if (!resourceName) {
+    throw new WorkTrellisError(
+      "This project does not configure database commands.",
+      {
+        remediation:
+          "Add `db: { resource: \"<postgres-resource-name>\", ... }` to worktrellis.config.ts.",
+      },
+    );
   }
+  const postgres = envContext.resources[resourceName] as PostgresDatabase;
 
-  const databaseUrl = postgres.urlFor(context.identity.databaseName);
+  const databaseUrl = postgres.url;
 
   switch (options.subcommand) {
     case "url":
@@ -374,8 +392,8 @@ export async function runDb(
 
     case "reset": {
       const { dropDatabase } = await import("../resources/postgres");
-      warn(`Dropping ${context.identity.databaseName} and rebuilding it.`);
-      await dropDatabase(databaseUrl, context.identity.databaseName);
+      warn(`Dropping ${postgres.database} and rebuilding it.`);
+      await dropDatabase(databaseUrl, postgres.database);
       await ensureWorkspaceDatabase({
         identity: context.identity,
         databaseUrl,

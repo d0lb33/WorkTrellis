@@ -26,9 +26,9 @@ const WORKTRELLIS_SRC = path.join(PACKAGE_ROOT, "src");
  * names of one specific project's stack; if any of them shows up here, project
  * knowledge has leaked past `worktrellis.config.ts` and extraction would break.
  *
- * Infrastructure kinds (postgres, redis, minio, mailpit) are deliberately NOT
- * on this list — WorkTrellis genuinely knows how to run those, and every parameter
- * still arrives from config.
+ * Protocol names used by optional resource adapters are deliberately not on
+ * this list. Container images and application vocabulary must remain in the
+ * consuming project.
  */
 const FORBIDDEN_TERMS = [
   "stars",

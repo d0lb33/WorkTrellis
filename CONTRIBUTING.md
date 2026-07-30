@@ -1,22 +1,30 @@
 # Contributing
 
-WorkTrellis is currently developed inside a host repository while its public
-package boundary is stabilized.
-
 ## Checks
 
-From the host repository:
+From the WorkTrellis repository:
 
 ```bash
-pnpm --filter worktrellis typecheck
-pnpm --filter worktrellis build
-pnpm --filter worktrellis test
-pnpm worktrellis self-check
-pnpm --filter worktrellis pack --dry-run
+pnpm install
+pnpm typecheck
+pnpm test
+pnpm build
+node bin/worktrellis.mjs --version
+node bin/worktrellis.mjs self-check
+npm pack --dry-run
 ```
 
-Changes to behavior need regression coverage. Changes to the public config
-contract must document whether `configVersion` remains compatible.
+Behavior changes need regression coverage. Changes to the public configuration
+contract must state whether they are additive or require a new
+`configVersion`.
 
-The package source must remain project-agnostic: project processes, environment
-names, migration commands, and policies belong in `worktrellis.config.ts`.
+The package source must remain project-agnostic. Project process names,
+environment keys, migrations, dump policy, and arbitrary service definitions
+belong in a consuming project's config, Compose files, and package scripts.
+
+For infrastructure features, apply the boundary test from ADR 001:
+
+> Does this coordinate or isolate Git worktrees?
+
+If not, it belongs in Compose, a project script, the application, or a
+dedicated tool.

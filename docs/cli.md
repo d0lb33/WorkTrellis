@@ -19,12 +19,12 @@ Commands search the current directory and its parents for
 
 ### `worktrellis up`
 
-Starts shared services when needed, provisions this worktree's resources,
+Starts configured Compose stacks when needed, provisions this worktree's resources,
 writes `.worktrellis/env`, and supervises configured processes.
 
 ```text
 --only <names>      Start only comma-separated process names
---no-services       Do not start shared services
+--no-services       Do not start stopped Compose stacks
 --direct            Force a localhost port instead of portless
 --portless          Require a portless hostname
 --migrate           Run the configured migration hook
@@ -34,17 +34,18 @@ writes `.worktrellis/env`, and supervises configured processes.
 
 ### `worktrellis down`
 
-Stops processes recorded for this worktree and releases its portless aliases.
-Shared containers remain running.
+Stops processes recorded for this worktree and releases its Portless aliases.
+Compose stacks remain running.
 
 ### `worktrellis status`
 
-Reports the worktree URL, supervised-process state, and shared-service health.
+Reports the worktree URL, supervised-process state, Compose health, and
+resolved resource names.
 Supports `--json`.
 
 ### `worktrellis doctor`
 
-Checks Node, Git, the container engine, service reachability, environment
+Checks Node, Git, the container engine, stack reachability, environment
 conflicts, generated-snapshot consumption, and project-defined doctor checks.
 Supports `--json`.
 
@@ -75,20 +76,27 @@ Runs a package-manager script with the resolved worktree environment. The
 manager comes from `packageManager` in the host project's `package.json`, then
 the invoking package manager, with pnpm as the final default.
 
-## Shared services
+## Compose infrastructure
 
 ```text
 worktrellis services up
 worktrellis services down [--volumes]
 worktrellis services restart
 worktrellis services status
-worktrellis services logs [service] [--tail <n>] [--follow]
+worktrellis services logs [stack] [--tail <n>] [--follow]
 worktrellis services adopt --postgres-port <port>
+worktrellis services adopt --local.postgres-port <port>
 ```
 
-`down` retains data volumes unless `--volumes` is explicitly supplied.
+`down` affects every stack declared by the current project and retains data
+volumes unless `--volumes` is explicitly supplied. For machine- or
+repository-scoped stacks, that can affect other active worktrees. `logs`
+defaults to the first declared stack.
+
 `adopt` records a machine-local port override without changing project
-configuration.
+configuration. An unqualified name such as `postgres` applies wherever that
+named port is used; `<stack>.<port>` scopes the override to one configured
+stack.
 
 ## Database
 
@@ -106,7 +114,8 @@ the current worktree.
 
 ### `worktrellis info`
 
-Prints the current worktree identity and derived resource names.
+Prints the current worktree identity, configured resource names, and
+foreground-process ports.
 
 ### `worktrellis list`
 

@@ -61,7 +61,6 @@ export function runList(options: ListOptions): number {
       return {
         slug: record.slug,
         branch: record.branch ?? "detached",
-        database: record.databaseName,
         seen: relativeAge(record.lastSeenAt),
         path: exists ? record.worktreeRoot : c.yellow(`${record.worktreeRoot} (missing)`),
       };
@@ -72,13 +71,10 @@ export function runList(options: ListOptions): number {
 
     const slugWidth = width((row) => row.slug);
     const branchWidth = width((row) => row.branch);
-    const databaseWidth = width((row) => row.database);
-
     for (const row of rows) {
       info(
         `  ${c.cyan(row.slug.padEnd(slugWidth))}  ` +
           `${row.branch.padEnd(branchWidth)}  ` +
-          `${c.gray(row.database.padEnd(databaseWidth))}  ` +
           `${c.gray(row.seen)}`,
       );
       info(`    ${c.gray(row.path)}`);

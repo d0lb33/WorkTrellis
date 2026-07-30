@@ -1,4 +1,5 @@
 import net from "node:net";
+import dgram from "node:dgram";
 
 /**
  * Port probing by binding a socket. This replaces shelling out to
@@ -17,20 +18,44 @@ function canBind(port: number, host: string): Promise<boolean> {
   });
 }
 
+function canBindUdp(port: number, host: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = dgram.createSocket("udp4");
+    socket.unref();
+    socket.once("error", () => {
+      socket.close();
+      resolve(false);
+    });
+    socket.bind({ port, address: host, exclusive: true }, () => {
+      socket.close(() => resolve(true));
+    });
+  });
+}
+
 /**
  * A port counts as available only when it binds on both the wildcard and
  * loopback addresses: Windows and Linux disagree about which of the two reports
  * a conflict when the other is already bound.
  */
-export async function isPortAvailable(port: number): Promise<boolean> {
+export async function isPortAvailable(
+  port: number,
+  protocol: "tcp" | "udp" = "tcp",
+): Promise<boolean> {
   for (const host of ["0.0.0.0", "127.0.0.1"]) {
-    if (!(await canBind(port, host))) return false;
+    const available =
+      protocol === "udp"
+        ? await canBindUdp(port, host)
+        : await canBind(port, host);
+    if (!available) return false;
   }
   return true;
 }
 
-export async function isPortInUse(port: number): Promise<boolean> {
-  return !(await isPortAvailable(port));
+export async function isPortInUse(
+  port: number,
+  protocol: "tcp" | "udp" = "tcp",
+): Promise<boolean> {
+  return !(await isPortAvailable(port, protocol));
 }
 
 export interface FindPortOptions {

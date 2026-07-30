@@ -13,22 +13,12 @@ import { ensureDirectory, readJsonFile, writeJsonFile } from "../util/fs";
  *   per-worktree   (<root>/.worktrellis) — this workspace's generated env,
  *                                         pinned identity, live pids, and logs.
  *
- * Before the public package was named, internal builds used `.devstack`.
- * Machine-global state keeps using that directory when present so existing
- * Compose definitions and volumes retain their identity. Per-worktree state is
- * copied forward once to `.worktrellis`, leaving the old directory as a backup.
  */
 
 export function worktrellisHome(): string {
   const override = process.env.WORKTRELLIS_HOME?.trim();
   if (override) return path.resolve(override);
-
-  const legacyOverride = process.env.DEVSTACK_HOME?.trim();
-  if (legacyOverride) return path.resolve(legacyOverride);
-
-  const current = path.join(os.homedir(), ".worktrellis");
-  const legacy = path.join(os.homedir(), ".devstack");
-  return !fs.existsSync(current) && fs.existsSync(legacy) ? legacy : current;
+  return path.join(os.homedir(), ".worktrellis");
 }
 
 export const homePaths = {
@@ -44,15 +34,9 @@ export const homePaths = {
 };
 
 export const WORKTRELLIS_DIRNAME = ".worktrellis";
-const LEGACY_DIRNAME = ".devstack";
 
 function workspaceStateRoot(worktreeRoot: string): string {
-  const current = path.join(worktreeRoot, WORKTRELLIS_DIRNAME);
-  const legacy = path.join(worktreeRoot, LEGACY_DIRNAME);
-  if (!fs.existsSync(current) && fs.existsSync(legacy)) {
-    fs.cpSync(legacy, current, { recursive: true, errorOnExist: true });
-  }
-  return current;
+  return path.join(worktreeRoot, WORKTRELLIS_DIRNAME);
 }
 
 export function workspacePaths(worktreeRoot: string, workspaceKey?: string) {
@@ -120,7 +104,7 @@ export function clearLiveRunState(stateFile: string): void {
 // ---------------------------------------------------------------------------
 
 export interface MachineConfig {
-  /** Per-machine port overrides by service kind, e.g. { postgres: 5433 }. */
+  /** Per-machine overrides by named port, e.g. { database: 5433 }. */
   portOverrides?: Record<string, number>;
   /** Preferred container engine, when both are installed. */
   engine?: "docker" | "podman";
@@ -145,10 +129,6 @@ export interface WorkspaceRecord {
   repoKey: string;
   worktreeRoot: string;
   branch: string | null;
-  databaseName: string;
-  bucketName: string;
-  redisPrefix: string;
-  redisDb: number;
   hostname: string;
   appUrl: string;
   lastSeenAt: string;
@@ -175,10 +155,6 @@ export function touchWorkspaceRecord(
     repoKey: identity.repoKey,
     worktreeRoot: identity.root,
     branch: identity.branch,
-    databaseName: identity.databaseName,
-    bucketName: identity.bucketName,
-    redisPrefix: identity.redisPrefix,
-    redisDb: identity.redisDb,
     hostname: extra.hostname,
     appUrl: extra.appUrl,
     createdAt: existing?.createdAt ?? now,

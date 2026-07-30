@@ -14,13 +14,13 @@
     "skipLibCheck": true,
     "noEmit": true,
     "incremental": true,
-    "tsBuildInfoFile": "../../.tsbuildinfo.worktrellis",
+    "tsBuildInfoFile": ".tsbuildinfo",
     "types": ["node"]
 
     // Deliberately NO "paths". WorkTrellis must never resolve the host project's
     // `~/*` alias — that is the compiler-enforced half of the extraction
     // boundary. See src/commands/self-check.ts for the other half.
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "include": ["src/**/*.ts", "test/**/*.ts", "examples/**/*.ts"],
   "exclude": ["node_modules"]
 }

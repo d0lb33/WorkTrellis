@@ -7,9 +7,9 @@ import { isPortAvailable } from "./ports";
 /**
  * Answering "who holds this port" rather than silently choosing another one.
  *
- * Shared infrastructure ports are fixed on purpose: a developer's connection
- * strings, SSH tunnels, and GUI clients all assume them. When a port is taken,
- * the useful response is to name the holder, not to drift somewhere else.
+ * Scoped infrastructure ports are stable on purpose: generated environments
+ * and GUI clients assume they do not drift between starts. When one is taken,
+ * the useful response is to name the holder.
  */
 export type PortOwner =
   | { kind: "free" }
@@ -63,9 +63,12 @@ function rowPublishesPort(row: ContainerPortRow, port: number): boolean {
 }
 
 /** Best-effort attribution of a listening port to a host process. */
-function foreignHolder(port: number): PortOwner {
+function foreignHolder(
+  port: number,
+  protocol: "tcp" | "udp",
+): PortOwner {
   if (IS_WINDOWS) {
-    const netstat = spawnSync("netstat", ["-ano", "-p", "tcp"], {
+    const netstat = spawnSync("netstat", ["-ano", "-p", protocol], {
       encoding: "utf8",
       windowsHide: true,
       timeout: 15_000,
@@ -73,7 +76,7 @@ function foreignHolder(port: number): PortOwner {
     if (netstat.status !== 0 || !netstat.stdout) return { kind: "unknown" };
 
     for (const line of netstat.stdout.split(/\r?\n/)) {
-      if (!line.includes("LISTENING")) continue;
+      if (protocol === "tcp" && !line.includes("LISTENING")) continue;
       const columns = line.trim().split(/\s+/);
       const local = columns[1] ?? "";
       if (!local.endsWith(`:${port}`)) continue;
@@ -96,10 +99,16 @@ function foreignHolder(port: number): PortOwner {
     return { kind: "unknown" };
   }
 
-  const commands: Array<[string, string[]]> = [
-    ["ss", ["-ltnpH", `sport = :${port}`]],
-    ["lsof", ["-iTCP:" + port, "-sTCP:LISTEN", "-P", "-n"]],
-  ];
+  const commands: Array<[string, string[]]> =
+    protocol === "udp"
+      ? [
+          ["ss", ["-lunpH", `sport = :${port}`]],
+          ["lsof", ["-iUDP:" + port, "-P", "-n"]],
+        ]
+      : [
+          ["ss", ["-ltnpH", `sport = :${port}`]],
+          ["lsof", ["-iTCP:" + port, "-sTCP:LISTEN", "-P", "-n"]],
+        ];
 
   for (const [command, args] of commands) {
     const result = spawnSync(command, args, {
@@ -125,7 +134,11 @@ function foreignHolder(port: number): PortOwner {
 
 export async function whoHolds(
   port: number,
-  options: { engine: ContainerEngine; ourStackIds: string[] },
+  options: {
+    engine: ContainerEngine;
+    ourStackIds: string[];
+    protocol?: "tcp" | "udp";
+  },
 ): Promise<PortOwner> {
   // Containers first: with a remote engine the port is published on the remote
   // host, so a local bind probe would wrongly report it free.
@@ -142,9 +155,10 @@ export async function whoHolds(
     };
   }
 
-  if (await isPortAvailable(port)) return { kind: "free" };
+  const protocol = options.protocol ?? "tcp";
+  if (await isPortAvailable(port, protocol)) return { kind: "free" };
 
-  return foreignHolder(port);
+  return foreignHolder(port, protocol);
 }
 
 export function describePortOwner(port: number, owner: PortOwner): string {

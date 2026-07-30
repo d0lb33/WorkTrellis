@@ -101,8 +101,11 @@ describe("WorkTrellis naming", () => {
   });
 
   describe("project name validation", () => {
-    it("rejects names that cannot lead a Postgres identifier", () => {
-      expect(() => assertProjectName("9lives")).toThrow(/digit/i);
+    it("accepts every valid DNS label independent of configured adapters", () => {
+      expect(() => assertProjectName("9lives")).not.toThrow();
+      expect(
+        buildDatabaseName("9lives", buildSlug("main", "deadbeef")),
+      ).toBe("p_9lives_main_deadbeef");
       expect(() => assertProjectName("Stars_Local")).toThrow(
         /Invalid project name/i,
       );

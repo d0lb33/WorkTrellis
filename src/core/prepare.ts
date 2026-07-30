@@ -4,19 +4,23 @@ import { buildEnvContext, resolveEnv, writeSnapshot, type ResolvedEnv } from "./
 import { readLiveRunState, touchWorkspaceRecord } from "./state";
 import { isProcessAlive } from "../util/proc";
 import type { UrlContext } from "../types";
-import { ensureServices, type EnsureResult } from "../platform/stack";
+import {
+  ensureInfrastructure,
+  type EnsureResult,
+} from "../platform/stack";
+import { resolveResources } from "../resources";
 import { resolveUrl, type ResolvedUrl, type UrlPreference } from "../url/provider";
 
 /**
  * The shared prelude for every command that needs a fully resolved environment:
- * identity, shared services, a URL, and the merged env.
+ * identity, scoped Compose infrastructure, a URL, and the merged env.
  *
  * `startServices` distinguishes the commands that may change machine state
  * (`up`) from those that must only observe it (`env`, `doctor`, `status`).
  */
 export interface PreparedWorkspace {
   context: CommandContext;
-  services: EnsureResult;
+  infrastructure: EnsureResult;
   url: ResolvedUrl;
   envContext: EnvContext;
   env: ResolvedEnv;
@@ -37,7 +41,10 @@ export async function prepareWorkspace(options: {
 }): Promise<PreparedWorkspace> {
   const context = await buildContext(options);
 
-  const services = await ensureServices(context.config.services, {
+  const infrastructure = await ensureInfrastructure(context.config.compose, {
+    identity: context.identity,
+    projectRoot: context.projectRoot,
+    baseEnv: Object.freeze(Object.fromEntries(context.baseEnv)),
     startIfStopped: options.startServices ?? false,
   });
 
@@ -55,9 +62,17 @@ export async function prepareWorkspace(options: {
     live: liveUrl,
   });
 
+  const resources = resolveResources({
+    adapters: context.config.resources,
+    compose: infrastructure.compose,
+    identity: context.identity,
+    baseEnv: Object.freeze(Object.fromEntries(context.baseEnv)),
+  });
+
   const envContext = buildEnvContext({
     identity: context.identity,
-    services: services.endpoints,
+    compose: infrastructure.compose,
+    resources,
     url: url.url,
     baseEnv: context.baseEnv,
   });
@@ -72,5 +87,5 @@ export async function prepareWorkspace(options: {
     });
   }
 
-  return { context, services, url, envContext, env };
+  return { context, infrastructure, url, envContext, env };
 }

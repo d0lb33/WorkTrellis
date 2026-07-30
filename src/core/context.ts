@@ -39,7 +39,7 @@ export async function buildContext(options: {
     cwd: loaded.projectRoot,
     project: loaded.config.project,
     pinFile: bootstrapPaths.workspace,
-    extraPorts: loaded.config.extraPorts,
+    extraPorts: loaded.config.processPorts,
     basePort: loaded.config.url?.basePort,
   });
 

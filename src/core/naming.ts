@@ -62,23 +62,15 @@ function fitWithSuffix(
 }
 
 export function assertProjectName(project: string): void {
-  if (!DNS_LABEL.test(project) || project.length > MAX_SLUG_LABEL) {
+  if (!DNS_LABEL.test(project) || project.length > MAX_DNS_LABEL) {
     throw new WorkTrellisError(
       `Invalid project name "${project}".`,
       {
-        remediation: `A project name must be a DNS label (lowercase letters, digits, hyphens; no leading or trailing hyphen) of at most ${MAX_SLUG_LABEL} characters.`,
+        remediation: `A project name must be a DNS label (lowercase letters, digits, hyphens; no leading or trailing hyphen) of at most ${MAX_DNS_LABEL} characters.`,
       },
     );
   }
 
-  // Postgres identifiers cannot start with a digit, and the project name leads
-  // every generated database name.
-  if (/^[0-9]/.test(project)) {
-    throw new WorkTrellisError(
-      `Invalid project name "${project}": it must not start with a digit.`,
-      { remediation: "Database names are derived from it and cannot start with a digit." },
-    );
-  }
 }
 
 export function buildSlug(label: string, fingerprint: string): string {
@@ -104,8 +96,11 @@ function splitSlug(slug: string): { label: string; fingerprint: string } {
 
 export function buildDatabaseName(project: string, slug: string): string {
   const { label, fingerprint } = splitSlug(slug);
+  const projectPrefix = /^[0-9]/.test(project)
+    ? `p_${toSnake(project)}`
+    : toSnake(project);
   const name = fitWithSuffix(
-    `${toSnake(project)}_${toSnake(label)}`,
+    `${projectPrefix}_${toSnake(label)}`,
     "_",
     fingerprint,
     MAX_PG_IDENTIFIER,
@@ -123,7 +118,15 @@ export function buildTemplateDatabaseName(
   project: string,
   fingerprint: string,
 ): string {
-  const name = `${toSnake(project)}_tpl_${fingerprint.slice(0, 12)}`;
+  const projectPrefix = /^[0-9]/.test(project)
+    ? `p_${toSnake(project)}`
+    : toSnake(project);
+  const name = fitWithSuffix(
+    `${projectPrefix}_tpl`,
+    "_",
+    fingerprint.slice(0, 12),
+    MAX_PG_IDENTIFIER,
+  );
   if (!PG_IDENTIFIER.test(name) || name.length > MAX_PG_IDENTIFIER) {
     throw new WorkTrellisError(
       `Derived template database name "${name}" is not a valid Postgres identifier.`,

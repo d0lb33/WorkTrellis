@@ -120,7 +120,7 @@ export async function createDatabase(
     // Serialize concurrent provisioning: two worktrees may start together, and
     // CREATE DATABASE is not idempotent.
     await admin.query("select pg_advisory_lock(hashtextextended($1, 0))", [
-      `devstack:create:${name}`,
+      `worktrellis:create:${name}`,
     ]);
 
     const existing = await admin.query(
@@ -133,7 +133,7 @@ export async function createDatabase(
     }
 
     await admin.query("select pg_advisory_unlock(hashtextextended($1, 0))", [
-      `devstack:create:${name}`,
+      `worktrellis:create:${name}`,
     ]);
   } finally {
     await admin.end();
@@ -159,7 +159,7 @@ export async function dropDatabase(
 
 /** Marks a database as WorkTrellis-managed and records where it came from. */
 const PROVENANCE_DDL = `
-create table if not exists _devstack_workspace (
+create table if not exists _worktrellis_workspace (
   slug text primary key,
   project text not null,
   worktree_path text not null,
@@ -175,7 +175,7 @@ async function hasProvenance(databaseUrl: string): Promise<boolean> {
   const client = await connect(databaseUrl);
   try {
     const result = await client.query<{ exists: boolean }>(
-      "select to_regclass('public._devstack_workspace') is not null as exists",
+      "select to_regclass('public._worktrellis_workspace') is not null as exists",
     );
     return result.rows[0]?.exists === true;
   } catch {
@@ -193,7 +193,7 @@ async function recordProvenance(
   try {
     await client.query(PROVENANCE_DDL);
     await client.query(
-      `insert into _devstack_workspace (slug, project, worktree_path)
+      `insert into _worktrellis_workspace (slug, project, worktree_path)
        values ($1, $2, $3)
        on conflict (slug) do update set last_seen_at = now(), worktree_path = excluded.worktree_path`,
       [identity.slug, identity.project, identity.root],

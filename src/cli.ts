@@ -174,16 +174,20 @@ const COMMANDS: Record<string, CommandHandler> = {
     }),
 };
 
-/** `--postgres-port 5433` and friends, for `worktrellis services adopt`. */
+/**
+ * `--database-port 5433` or `--local.database-port 5433`, for
+ * `worktrellis services adopt`.
+ */
 function collectPortOverrides(
   args: ReturnType<typeof parseArgs>,
 ): Record<string, number> {
   const overrides: Record<string, number> = {};
 
   for (const [flag, value] of args.flags) {
-    // camelCase is allowed so the secondary ports (minioConsole, mailpitUi)
-    // are reachable, not just the primary one per service.
-    const match = /^([a-zA-Z]+)-port$/.exec(flag);
+    // camelCase is allowed for secondary ports. A stack-qualified key targets
+    // one stack without overriding an identically named port elsewhere.
+    const match =
+      /^([a-z][a-zA-Z0-9-]*(?:\.[a-z][a-zA-Z0-9]*)?)-port$/.exec(flag);
     if (!match || typeof value !== "string") continue;
 
     const port = Number.parseInt(value, 10);

@@ -51,18 +51,11 @@ export async function runInfo(options: InfoOptions): Promise<number> {
   ]);
 
   info("");
-  heading("  Isolated resources");
+  heading("  Process ports");
   table([
-    ["database", identity.databaseName],
-    ["bucket", identity.bucketName],
-    ["redis prefix", identity.redisPrefix],
-    ["redis db", String(identity.redisDb)],
-    [
-      "ports",
-      Object.entries(identity.ports)
-        .map(([name, port]) => `${name}:${port}`)
-        .join("  "),
-    ],
+    ...Object.entries(identity.ports).map(
+      ([name, port]) => [name, String(port)] as [string, string],
+    ),
   ]);
 
   info("");

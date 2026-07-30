@@ -3,6 +3,7 @@ import path from "node:path";
 import { EXIT } from "../core/errors";
 import { prepareWorkspace } from "../core/prepare";
 import { ensureWorkspaceDatabase } from "../resources/postgres";
+import { describeResources, provisionResources } from "../resources";
 import { clearLiveRunState, writeLiveRunState } from "../core/state";
 import { reapOrphans } from "../supervise/reaper";
 import { installSignalHandlers } from "../supervise/signals";
@@ -10,6 +11,7 @@ import { Supervisor } from "../supervise/supervisor";
 import { clearRunRecord } from "../supervise/reaper";
 import { c, heading, info, step, table, warn } from "../util/log";
 import type { UrlPreference } from "../url/provider";
+import type { PostgresDatabase } from "../types";
 
 export interface UpOptions {
   cwd?: string;
@@ -32,7 +34,7 @@ export async function runUp(options: UpOptions): Promise<number> {
     urlPreference: options.urlPreference,
   });
 
-  const { context, services, url, env } = prepared;
+  const { context, infrastructure, url, env, envContext } = prepared;
   const { identity } = context;
 
   info("");
@@ -58,15 +60,19 @@ export async function runUp(options: UpOptions): Promise<number> {
   }
 
   // Services
-  const unreachable = services.statuses.filter((status) => !status.reachable);
+  const unreachable = infrastructure.statuses.filter(
+    (status) => !status.reachable,
+  );
   if (unreachable.length > 0) {
     warn(
-      `${unreachable.map((status) => status.kind).join(", ")} not reachable. The app will start but will fail when it tries to use them.`,
+      `${unreachable.map((status) => status.name).join(", ")} not reachable. The app will start but will fail when it tries to use them.`,
     );
   } else {
     step(
       "services",
-      services.statuses.map((status) => `${status.kind} ${c.green("ready")}`).join("  "),
+      infrastructure.statuses
+        .map((status) => `${status.name} ${c.green("ready")}`)
+        .join("  "),
     );
   }
 
@@ -84,11 +90,28 @@ export async function runUp(options: UpOptions): Promise<number> {
   // Database. The URL is computed from the resolved endpoint rather than read
   // out of the environment, so WorkTrellis never has to assume what a project
   // calls its connection-string variable.
-  if (services.endpoints.postgres) {
+  try {
+    await provisionResources({
+      adapters: context.config.resources,
+      resources: envContext.resources,
+      compose: envContext.compose,
+      identity,
+      projectRoot: context.projectRoot,
+      baseEnv: envContext.baseEnv,
+      skip: context.config.db ? [context.config.db.resource] : undefined,
+    });
+  } catch (caught) {
+    warn(`resource provisioning failed: ${(caught as Error).message}`);
+  }
+
+  if (context.config.db) {
+    const postgres = envContext.resources[
+      context.config.db.resource
+    ] as PostgresDatabase;
     try {
       const result = await ensureWorkspaceDatabase({
         identity,
-        databaseUrl: services.endpoints.postgres.urlFor(identity.databaseName),
+        databaseUrl: postgres.url,
         env: env.combined,
         projectRoot: context.projectRoot,
         hooks: context.config.db,
@@ -98,7 +121,7 @@ export async function runUp(options: UpOptions): Promise<number> {
 
       step(
         "database",
-        `${identity.databaseName} ${c.green(
+        `${postgres.database} ${c.green(
           result.created ? "created" : "ready",
         )}${result.migrated ? c.gray(" · migrated") : ""}${result.seeded ? c.gray(" · seeded") : ""}`,
       );
@@ -131,16 +154,20 @@ export async function runUp(options: UpOptions): Promise<number> {
   }
 
   info("");
+  const resourceRows = describeResources(
+    context.config.resources,
+    envContext.resources,
+  ).map(
+    (resource) =>
+      [
+        resource.name,
+        c.gray(resource.detail),
+      ] as [string, string],
+  );
   table([
     ["App", c.cyan(url.url.appUrl)],
     ["Tenants", c.gray(url.url.tenantUrlTemplate)],
-    ...(services.endpoints.mailpit
-      ? ([["Mailpit", c.gray(services.endpoints.mailpit.uiUrl)]] as Array<[string, string]>)
-      : []),
-    ...(services.endpoints.minio
-      ? ([["Storage", c.gray(services.endpoints.minio.consoleUrl)]] as Array<[string, string]>)
-      : []),
-    ["Database", c.gray(identity.databaseName)],
+    ...resourceRows,
   ]);
   info("");
 

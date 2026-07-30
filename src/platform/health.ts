@@ -1,16 +1,7 @@
 import net from "node:net";
 
-import type { ServiceKind } from "../types";
+import type { PortProbe } from "../types";
 import { canConnect } from "./ports";
-
-/**
- * Readiness probes that run from *here*, not inside the container.
- *
- * This distinction matters whenever the container engine is remote: compose can
- * report a container healthy while the port is not reachable from the machine
- * running the app, because the publish happened on the engine's host. Only a
- * probe from this process proves the app will be able to connect.
- */
 
 export interface ProbeResult {
   reachable: boolean;
@@ -32,11 +23,17 @@ async function probeRedis(port: number, host: string): Promise<ProbeResult> {
       const reply = chunk.toString();
       finish({
         reachable: reply.startsWith("+PONG"),
-        detail: reply.startsWith("+PONG") ? undefined : `unexpected reply ${reply.trim()}`,
+        detail: reply.startsWith("+PONG")
+          ? undefined
+          : `unexpected reply ${reply.trim()}`,
       });
     });
-    socket.once("error", (caught) => finish({ reachable: false, detail: caught.message }));
-    socket.once("timeout", () => finish({ reachable: false, detail: "timed out" }));
+    socket.once("error", (caught) =>
+      finish({ reachable: false, detail: caught.message }),
+    );
+    socket.once("timeout", () =>
+      finish({ reachable: false, detail: "timed out" }),
+    );
   });
 }
 
@@ -54,11 +51,17 @@ async function probeSmtp(port: number, host: string): Promise<ProbeResult> {
       const banner = chunk.toString().trim();
       finish({
         reachable: banner.startsWith("220"),
-        detail: banner.startsWith("220") ? undefined : `unexpected banner ${banner}`,
+        detail: banner.startsWith("220")
+          ? undefined
+          : `unexpected banner ${banner}`,
       });
     });
-    socket.once("error", (caught) => finish({ reachable: false, detail: caught.message }));
-    socket.once("timeout", () => finish({ reachable: false, detail: "timed out" }));
+    socket.once("error", (caught) =>
+      finish({ reachable: false, detail: caught.message }),
+    );
+    socket.once("timeout", () =>
+      finish({ reachable: false, detail: "timed out" }),
+    );
   });
 }
 
@@ -76,40 +79,48 @@ async function probeHttp(url: string): Promise<ProbeResult> {
   }
 }
 
-export async function probeService(
-  kind: ServiceKind,
-  ports: Record<string, number>,
+export async function probePort(
+  probe: PortProbe | undefined,
+  port: number,
   host = "127.0.0.1",
 ): Promise<ProbeResult> {
-  switch (kind) {
-    case "postgres": {
-      // A TCP connect is as far as we go without a driver: Postgres will not
-      // speak without a startup packet, and connecting proves reachability.
-      const reachable = await canConnect(ports.main!, host, 3_000);
-      return { reachable, detail: reachable ? undefined : "no TCP connection" };
-    }
+  const selected = probe ?? { kind: "tcp" };
+  switch (selected.kind) {
+    case "none":
+      return { reachable: true, detail: "probe disabled" };
     case "redis":
-      return probeRedis(ports.main!, host);
-    case "minio":
-      return probeHttp(`http://${host}:${ports.api}/minio/health/live`);
-    case "mailpit":
-      return probeSmtp(ports.smtp!, host);
-    default:
-      return { reachable: false, detail: "unknown service kind" };
+      return probeRedis(port, host);
+    case "smtp":
+      return probeSmtp(port, host);
+    case "http":
+      return probeHttp(
+        `http://${host}:${port}${selected.path?.startsWith("/") ? selected.path : selected.path ? `/${selected.path}` : ""}`,
+      );
+    case "postgres":
+    case "tcp": {
+      const reachable = await canConnect(port, host, 3_000);
+      return {
+        reachable,
+        detail: reachable ? undefined : "no TCP connection",
+      };
+    }
   }
 }
 
-/** Poll a service until it answers, or give up. */
-export async function waitForService(
-  kind: ServiceKind,
-  ports: Record<string, number>,
-  { timeoutMs = 60_000, intervalMs = 500, host = "127.0.0.1" } = {},
+export async function waitForPortProbe(
+  probe: PortProbe | undefined,
+  port: number,
+  {
+    timeoutMs = 60_000,
+    intervalMs = 500,
+    host = "127.0.0.1",
+  }: { timeoutMs?: number; intervalMs?: number; host?: string } = {},
 ): Promise<ProbeResult> {
   const deadline = Date.now() + timeoutMs;
   let last: ProbeResult = { reachable: false, detail: "not probed" };
 
   while (Date.now() < deadline) {
-    last = await probeService(kind, ports, host);
+    last = await probePort(probe, port, host);
     if (last.reachable) return last;
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }

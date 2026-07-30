@@ -30,7 +30,7 @@ vi.mock("pg", () => {
       if (/drop database/i.test(text)) {
         postgresState.databaseExists = false;
       }
-      if (text.includes("create table if not exists _devstack_workspace")) {
+      if (text.includes("create table if not exists _worktrellis_workspace")) {
         postgresState.provenanceExists = true;
       }
 
@@ -56,10 +56,6 @@ const identity: WorkspaceIdentity = {
   project: "test",
   slug: "test-deadbeef",
   fingerprint: "deadbeef",
-  databaseName: "test_test_deadbeef",
-  bucketName: "test-test-deadbeef",
-  redisPrefix: "test:test-deadbeef",
-  redisDb: 1,
   ports: { app: 3000 },
 };
 
@@ -86,7 +82,7 @@ describe("WorkTrellis database bootstrap recovery", () => {
     const migrate = vi.fn(async () => {});
 
     const result = await ensureWorkspaceDatabase(
-      options({ migrate }),
+      options({ resource: "database", migrate }),
     );
 
     expect(migrate).toHaveBeenCalledOnce();
@@ -100,6 +96,7 @@ describe("WorkTrellis database bootstrap recovery", () => {
     await expect(
       ensureWorkspaceDatabase(
         options({
+          resource: "database",
           migrate: async () => {
             throw failure;
           },

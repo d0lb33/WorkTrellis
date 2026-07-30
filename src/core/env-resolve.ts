@@ -1,6 +1,7 @@
 import type {
+  ComposeContext,
   EnvContext,
-  PlatformEndpoints,
+  ResolvedResources,
   UrlContext,
   WorkspaceIdentity,
 } from "../types";
@@ -46,13 +47,15 @@ export function looksSecret(key: string): boolean {
 
 export function buildEnvContext(input: {
   identity: WorkspaceIdentity;
-  services: PlatformEndpoints;
+  compose: ComposeContext;
+  resources: ResolvedResources;
   url: UrlContext;
   baseEnv: Map<string, string>;
 }): EnvContext {
   return {
     workspace: input.identity,
-    services: input.services,
+    compose: input.compose,
+    resources: input.resources,
     url: input.url,
     baseEnv: Object.freeze(Object.fromEntries(input.baseEnv)),
   };
@@ -124,7 +127,7 @@ export function writeSnapshot(
       `worktree   ${identity.root}`,
       "",
       "These values are derived from worktrellis.config.ts and this machine's",
-      "shared services. Edit the config, not this file. Secrets stay in the",
+      "scoped infrastructure. Edit the config, not this file. Secrets stay in the",
       "project's own env file, which WorkTrellis never writes.",
     ],
   });

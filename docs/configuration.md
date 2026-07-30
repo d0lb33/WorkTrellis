@@ -7,7 +7,7 @@ found while walking from the current directory to the filesystem root.
 import { defineConfig } from "worktrellis";
 
 export default defineConfig({
-  configVersion: 1,
+  configVersion: 2,
   // ...
 });
 ```
@@ -16,72 +16,217 @@ export default defineConfig({
 
 | Field | Required | Purpose |
 | --- | --- | --- |
-| `configVersion` | yes | Version of the configuration contract; currently `1` |
-| `project` | yes | DNS-safe namespace for resources and hostnames |
-| `services` | yes | Shared services required by the project |
-| `env` | yes | Maps resolved context to WorkTrellis-owned variables |
-| `processes` | yes | Processes supervised by `worktrellis up` |
-| `db` | no | Migration, installation, and seed hooks |
+| `configVersion` | yes | Configuration contract version; currently `2` |
+| `project` | yes | DNS-safe namespace for identities and hostnames |
+| `compose` | yes | Scoped project-owned Compose stacks |
+| `resources` | no | Named logical resource adapters |
+| `env` | yes | Maps resolved context to generated variables |
+| `processes` | yes | Foreground processes supervised by `up` |
+| `db` | no | Project-owned PostgreSQL setup hooks |
 | `baseEnvFile` | no | Read-only secrets file; defaults to `.env` |
-| `criticalKeys` | no | Derived keys whose `.env` conflicts fail doctor |
-| `extraPorts` | no | Additional deterministic per-worktree ports |
-| `url` | no | URL provider, wildcard behavior, and base port |
-| `gc` | no | Retention policy for inactive workspaces |
+| `criticalKeys` | no | Generated keys whose `.env` conflicts fail doctor |
+| `processPorts` | no | Additional deterministic foreground-process ports |
+| `url` | no | URL provider, wildcard behavior, and base app port |
+| `gc` | no | Retention policy for inactive workspace records |
 | `doctor` | no | Project-specific diagnostic checks |
 
-## Services
+## Compose stacks
 
-One service of each kind may be declared:
+Projects own every service definition. WorkTrellis selects a scope, generates
+the Compose project identity, publishes named ports on `127.0.0.1`, checks for
+conflicts, and starts or inspects the stack.
 
 ```ts
-services: [
+compose: [
   {
-    kind: "postgres",
-    version: "16",
-    image: "postgres:16-alpine",
-    port: 5432,
-    superuser: "postgres",
-    password: "postgres",
-    serverArgs: ["max_connections=300"],
+    name: "infrastructure",
+    scope: "machine",
+    files: ["compose.worktrellis.yml"],
+    ports: {
+      database: {
+        service: "postgres",
+        containerPort: 5432,
+        probe: { kind: "postgres" },
+      },
+      pgadmin: {
+        service: "pgadmin",
+        containerPort: 80,
+        probe: { kind: "http" },
+      },
+    },
   },
-  { kind: "redis", version: "7", port: 6379 },
-  {
-    kind: "minio",
-    apiPort: 9000,
-    consolePort: 9001,
-    region: "us-east-1",
-  },
-  { kind: "mailpit", smtpPort: 1025, uiPort: 8025 },
 ],
 ```
 
-Compatible definitions share one machine-level container and volume. Different
-service definitions receive different stack identities and report a port
-conflict rather than silently connecting a project to the wrong service.
+Every stack requires at least one project-owned Compose file. WorkTrellis
+copies and merges the declared files, then adds a final generated override
+containing host-port publications. Project files should not publish those same
+ports themselves.
+
+Available scopes:
+
+| Scope | Lifetime |
+| --- | --- |
+| `machine` | Shared by the same named, identical definition across the host |
+| `repository` | Shared by all worktrees of one Git repository |
+| `workspace` | Separate for every worktree |
+
+Machine- and repository-scoped definitions run from their stable directory
+under `WORKTRELLIS_HOME`, so compatible worktrees do not fight over a project
+directory. Keep shared-stack Compose files self-contained: avoid relative bind
+mounts, build contexts, and relative `env_file` paths. Use `workspace` scope
+when a service needs files from the current worktree.
+
+Declare Compose interpolation inputs explicitly. Values can read the
+project's read-only secrets file:
+
+```ts
+compose: [{
+  // ...
+  env: {
+    POSTGRES_PASSWORD: ({ baseEnv }) => baseEnv.POSTGRES_PASSWORD,
+  },
+}],
+```
+
+Then `${POSTGRES_PASSWORD}` works normally in the Compose file. Declared values
+participate in compatible stack identity without being written to generated
+files. A real process environment variable still has normal Compose precedence.
+
+For each named port, `service` must match the merged Compose service name and
+`containerPort` is its internal listener. `hostPort` is optional; when omitted,
+WorkTrellis derives a stable port from the selected scope. Supported probes are
+`tcp`, `http`, `postgres`, `redis`, `smtp`, and `none`. TCP is the default;
+UDP ports default to `none`.
+
+`compose.url(stack, port, scheme?)` returns a loopback URL for a declared named
+port. Raw ports are available at `compose.stacks[stack].ports[port]`.
+
+WorkTrellis has no runtime service catalog. PostGIS, PgAdmin, Gotenberg,
+Mailpit, MSSQL, and new containers require no core change.
+
+## Resource adapters
+
+Containers and logical resources are separate concepts. A Compose service
+starts PostgreSQL; `postgresDatabase()` derives and provisions a database for
+the current worktree.
+
+Resources are an arbitrary named map:
+
+```ts
+import {
+  defineConfig,
+  postgresDatabase,
+  redisNamespace,
+  s3Bucket,
+} from "worktrellis";
+
+export default defineConfig({
+  // ...
+  resources: {
+    database: postgresDatabase({
+      endpoint: { stack: "infrastructure", port: "database" },
+      isolation: "database",
+      user: "postgres",
+      password: ({ baseEnv }) => baseEnv.POSTGRES_PASSWORD,
+    }),
+    cache: redisNamespace({
+      endpoint: { stack: "infrastructure", port: "redis" },
+      isolation: "namespace",
+      databaseCount: 16,
+    }),
+    uploads: s3Bucket({
+      endpoint: { stack: "infrastructure", port: "s3" },
+      isolation: "bucket",
+      accessKey: ({ baseEnv }) => baseEnv.S3_ACCESS_KEY,
+      secretKey: ({ baseEnv }) => baseEnv.S3_SECRET_KEY,
+      region: "us-east-1",
+    }),
+  },
+
+  env: ({ resources }) => ({
+    DATABASE_URL: resources.database.url,
+    REDIS_URL: resources.cache.url,
+    REDIS_KEY_PREFIX: `${resources.cache.prefix}:`,
+    S3_ENDPOINT: resources.uploads.endpoint,
+    S3_BUCKET: resources.uploads.bucket,
+  }),
+});
+```
+
+Adapter names are chosen by the project and remain type-safe in `env`,
+process callbacks, and doctor checks.
+
+Built-in protocol adapters:
+
+- `postgresDatabase()` creates a separate PostgreSQL database, never a schema;
+- `redisNamespace()` supplies a logical database plus a collision-resistant
+  key prefix;
+- `s3Bucket()` ensures a worktree-specific S3-compatible bucket exists.
+
+The helpers know protocols, not images. `postgresDatabase()` works with
+`postgres`, `postgis/postgis`, or another compatible server. Credentials in an
+adapter must match the project-owned Compose definition or secrets it uses.
+
+Endpoint-only services need no adapter:
+
+```ts
+env: ({ compose }) => ({
+  PGADMIN_URL: compose.url("infrastructure", "pgadmin"),
+  GOTENBERG_URL: compose.url("documents", "gotenberg"),
+}),
+```
+
+If a stateful service has no logical adapter, make its stack
+`scope: "workspace"` to get a container per worktree. A community adapter can
+instead isolate data inside a shared service.
+
+## Custom adapters
+
+`defineResourceAdapter()` preserves a custom adapter's resolved type:
+
+```ts
+import { defineResourceAdapter } from "worktrellis";
+
+const searchIndex = (endpoint: { stack: string; port: string }) =>
+  defineResourceAdapter({
+    kind: "search-index",
+    isolation: "index",
+    endpoint,
+    resolve: ({ workspace, endpoint }) => ({
+      url: endpoint.url(),
+      index: `${workspace.project}-${workspace.slug}`,
+    }),
+    describe: (resource) => `index ${resource.index}`,
+    async provision(resource) {
+      // Use the service's client to idempotently ensure resource.index.
+    },
+  });
+```
+
+`resolve` must be synchronous and side-effect-free because read-only commands
+also resolve the environment. It receives the read-only `baseEnv` object for
+credentials that live in the project's secrets file. `provision` is optional,
+asynchronous, and must be idempotent. The endpoint references a declared named
+Compose port, so WorkTrellis still validates the stack boundary and controls
+host publication.
 
 ## Environment profile
 
 `env(context)` receives:
 
-- `workspace`: stable identity, database/bucket/Redis names, and ports;
-- `services`: resolved endpoints with URL helpers;
+- `workspace`: stable Git/worktree identity and foreground-process ports;
+- `compose`: resolved stack identities, named ports, and URL helper;
+- `resources`: the typed values returned by configured adapters;
 - `url`: app URL, listen port, cookie domain, and provider variables;
 - `baseEnv`: a frozen view of the secrets file.
 
-Return only variables WorkTrellis should own. Return `undefined` to omit a key.
+Return only variables WorkTrellis should derive. Return `undefined` to omit a
+key.
 
-```ts
-env: ({ workspace, services, url }) => ({
-  DATABASE_URL: services.postgres?.urlFor(workspace.databaseName),
-  REDIS_URL: services.redis?.urlFor(workspace.redisDb),
-  PORT: String(url.listenPort),
-  APP_URL: url.appUrl,
-}),
-```
+## Foreground processes
 
-## Processes
-
-Commands are arrays, never shell strings:
+Commands are argument arrays, never shell strings:
 
 ```ts
 processes: [
@@ -95,19 +240,27 @@ processes: [
   },
   {
     name: "worker",
-    command: { bin: "node", args: ["worker.mjs"] },
+    command: { node: ["worker.mjs"] },
     dependsOn: ["app"],
   },
 ],
 ```
 
-Dependency names must exist and dependency cycles are rejected while loading
-the configuration.
+`{ node: [...] }` launches the given JavaScript entry with the current Node
+binary. `{ bin, args }` launches an executable directly without a shell.
+Dependency names must exist and cycles are rejected.
+
+The supervisor is intentionally limited to foreground local-development
+processes, readiness, restart-on-crash, dependency ordering, and clean process
+tree shutdown.
 
 ## Database hooks
 
+Database hooks explicitly name a configured `postgresDatabase()` resource:
+
 ```ts
 db: {
+  resource: "database",
   schemaFingerprintFiles: ["prisma/schema.prisma", "prisma/migrations"],
   migrate: (context) =>
     context.exec(context.bin("prisma"), ["migrate", "deploy"]),
@@ -122,13 +275,14 @@ db: {
 
 The schema fingerprint selects a reusable template database. New worktrees are
 cloned from the matching template, then `afterClone` runs when configured.
+Hooks receive the exact worktree database URL, executable resolver, process
+runner, SQL helper, and resolved environment.
 
-Hooks receive the exact worktree database URL, an executable resolver, a
-process runner, a SQL helper, and the resolved environment.
+Database dumps remain project-owned. Restore them with a checked-in script:
 
-Production dumps are application data and should normally be restored by a
-checked-in package script invoked through `worktrellis run`. This keeps
-sanitization, format selection, and destructive safety policy in the project.
+```bash
+worktrellis run db:restore -- ./backups/latest.dump
+```
 
 ## URL providers
 
@@ -140,15 +294,17 @@ url: {
 },
 ```
 
-`auto` prefers portless and falls back to a deterministic localhost port.
+`auto` prefers Portless and falls back to a deterministic localhost port.
 `direct` always uses the port. `portless` treats an unavailable proxy as an
 error.
 
 ## Configuration compatibility
 
-The npm package follows semantic versioning. `configVersion` is a separate,
-integer protocol for the config file itself:
+The npm package follows semantic versioning. `configVersion` is a separate
+integer protocol:
 
-- additive fields do not require a new configuration version;
-- a breaking interpretation change requires a new version;
-- unknown versions fail with a remediation message.
+- additive fields can remain on the current version;
+- a breaking interpretation requires a new version;
+- unsupported versions fail before infrastructure is changed.
+
+WorkTrellis 0.2 accepts only `configVersion: 2`.

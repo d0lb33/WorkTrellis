@@ -4,9 +4,6 @@ import type { WorkspaceIdentity } from "../types";
 import { environmentError } from "./errors";
 import {
   assertProjectName,
-  buildBucketName,
-  buildDatabaseName,
-  buildRedisPrefix,
   buildSlug,
   FINGERPRINT_LENGTH,
   sanitizeLabel,
@@ -17,9 +14,6 @@ import { run, whichSync } from "../util/proc";
 
 /** Branch names that carry no useful worktree meaning. */
 const UNINFORMATIVE_BRANCHES = new Set(["main", "master", "head"]);
-
-/** Redis ships 16 logical databases by default. */
-const REDIS_DATABASE_COUNT = 16;
 
 export interface GitFacts {
   toplevel: string;
@@ -131,7 +125,7 @@ export interface PinnedIdentity {
  * `main` is still distinct from a second clone on `main`.
  *
  * The result is pinned to disk on first use so that renaming a branch does not
- * orphan the database and bucket that were already provisioned.
+ * orphan resources that were already provisioned.
  */
 export async function resolveIdentity(options: {
   cwd: string;
@@ -178,10 +172,6 @@ export async function resolveIdentity(options: {
     project: options.project,
     slug,
     fingerprint,
-    databaseName: buildDatabaseName(options.project, slug),
-    bucketName: buildBucketName(options.project, slug),
-    redisPrefix: buildRedisPrefix(options.project, slug),
-    redisDb: hexModulo(fingerprint, REDIS_DATABASE_COUNT),
     ports: derivePorts(fingerprint, options.basePort ?? 3000, options.extraPorts ?? []),
   };
 }

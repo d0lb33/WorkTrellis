@@ -1,55 +1,11 @@
 /**
  * The WorkTrellis public contract.
  *
- * Everything a project needs to say about itself is expressed here and supplied
- * through its `worktrellis.config.ts`. Nothing in this package may import from a
- * host project; all project knowledge arrives through these types.
+ * Projects own every Compose service definition. WorkTrellis owns stable
+ * worktree identity, scoped Compose project names, host-port publication,
+ * optional logical resource isolation, generated environment, and foreground
+ * development processes.
  */
-
-// ---------------------------------------------------------------------------
-// Services
-// ---------------------------------------------------------------------------
-
-export interface PostgresSpec {
-  kind: "postgres";
-  /** Major version. Governs the image tag AND the data volume identity. */
-  version: string;
-  image?: string;
-  port?: number;
-  superuser?: string;
-  password?: string;
-  /** Extra `-c key=value` server arguments, e.g. ["max_connections=300"]. */
-  serverArgs?: string[];
-}
-
-export interface RedisSpec {
-  kind: "redis";
-  version: string;
-  image?: string;
-  port?: number;
-}
-
-export interface MinioSpec {
-  kind: "minio";
-  version?: string;
-  image?: string;
-  apiPort?: number;
-  consolePort?: number;
-  rootUser?: string;
-  rootPassword?: string;
-  region?: string;
-}
-
-export interface MailpitSpec {
-  kind: "mailpit";
-  version?: string;
-  image?: string;
-  smtpPort?: number;
-  uiPort?: number;
-}
-
-export type ServiceSpec = PostgresSpec | RedisSpec | MinioSpec | MailpitSpec;
-export type ServiceKind = ServiceSpec["kind"];
 
 // ---------------------------------------------------------------------------
 // Workspace identity
@@ -66,114 +22,204 @@ export interface WorkspaceIdentity {
   head: string;
   /** From config.project — a DNS label. */
   project: string;
-  /** `<label>-<fingerprint>`. A DNS label, and the isolation key for everything. */
+  /** `<label>-<fingerprint>`, and the isolation key for this worktree. */
   slug: string;
-  /** 8 lowercase hex derived from `root`. The collision breaker. */
+  /** Eight lowercase hex characters derived from the canonical worktree path. */
   fingerprint: string;
-  databaseName: string;
-  bucketName: string;
-  redisPrefix: string;
-  redisDb: number;
-  /** Deterministic per-worktree ports, `app` plus anything in config.extraPorts. */
+  /** Deterministic per-worktree process ports, always including `app`. */
   ports: Readonly<Record<string, number>>;
 }
 
 // ---------------------------------------------------------------------------
-// URLs
+// Compose infrastructure
+// ---------------------------------------------------------------------------
+
+export type InfrastructureScope = "machine" | "repository" | "workspace";
+
+export type PortProbe =
+  | { kind: "none" }
+  | { kind: "tcp" }
+  | { kind: "postgres" }
+  | { kind: "redis" }
+  | { kind: "smtp" }
+  | { kind: "http"; path?: string };
+
+export interface ComposePortSpec {
+  /** Service name in the merged Compose model. */
+  service: string;
+  /** Port listened to inside the service container. */
+  containerPort: number;
+  /** Optional fixed host port. Otherwise WorkTrellis derives one by scope. */
+  hostPort?: number;
+  protocol?: "tcp" | "udp";
+  /** Reachability check. Defaults to TCP, or none for UDP. */
+  probe?: PortProbe;
+}
+
+export interface ComposeEnvContext {
+  /** Parsed project secrets file. Read only. */
+  baseEnv: Readonly<Record<string, string>>;
+}
+
+export type ComposeEnvValue =
+  | string
+  | ((context: ComposeEnvContext) => string | undefined);
+
+export interface ComposeStackSpec {
+  /** Unique name within this WorkTrellis configuration. */
+  name: string;
+  /**
+   * machine: shared by compatible projects on this host
+   * repository: shared by all worktrees of this repository
+   * workspace: one Compose project per worktree
+   */
+  scope: InfrastructureScope;
+  /** Project-owned Compose files, relative to the configuration root. */
+  files: string[];
+  /**
+   * Named host ports. WorkTrellis emits a final Compose override so projects do
+   * not publish these ports themselves.
+   */
+  ports?: Record<string, ComposePortSpec>;
+  /** Explicit interpolation values supplied only to Compose. */
+  env?: Record<string, ComposeEnvValue>;
+}
+
+export interface ResolvedComposeStack {
+  name: string;
+  scope: InfrastructureScope;
+  projectName: string;
+  ports: Readonly<Record<string, number>>;
+}
+
+export interface ComposeContext {
+  stacks: Readonly<Record<string, ResolvedComposeStack>>;
+  /** URL for a declared named port. HTTP is the default scheme. */
+  url(stack: string, port: string, scheme?: string): string;
+}
+
+// ---------------------------------------------------------------------------
+// Extensible resource adapters
+// ---------------------------------------------------------------------------
+
+export interface ResourceEndpoint {
+  /** Compose stack name. */
+  stack: string;
+  /** Named port declared by that stack. */
+  port: string;
+}
+
+export interface ResolvedResourceEndpoint extends ResourceEndpoint {
+  host: string;
+  hostPort: number;
+  url(scheme?: string): string;
+}
+
+export interface ResourceResolveContext {
+  workspace: WorkspaceIdentity;
+  compose: ComposeContext;
+  endpoint: ResolvedResourceEndpoint;
+  /** Parsed project secrets file. Read only. */
+  baseEnv: Readonly<Record<string, string>>;
+}
+
+export interface ResourceProvisionContext extends ResourceResolveContext {
+  projectRoot: string;
+}
+
+/**
+ * A resource adapter isolates logical data inside a protocol-compatible
+ * endpoint. Third-party adapters can use this interface without teaching
+ * WorkTrellis anything about the container image behind that endpoint.
+ */
+export interface ResourceAdapter<TResolved> {
+  readonly kind: string;
+  readonly isolation: string;
+  readonly endpoint: ResourceEndpoint;
+  resolve(context: ResourceResolveContext): TResolved;
+  /** Short non-secret description used by status output. */
+  describe?(resource: TResolved): string;
+  provision?(
+    resource: TResolved,
+    context: ResourceProvisionContext,
+  ): Promise<void>;
+}
+
+export type AnyResourceAdapter = ResourceAdapter<any>;
+export type ResourceAdapters = Record<string, AnyResourceAdapter>;
+export type ResolvedResources<
+  TAdapters extends ResourceAdapters = ResourceAdapters,
+> = {
+  [K in keyof TAdapters]: TAdapters[K] extends ResourceAdapter<infer TResolved>
+    ? TResolved
+    : never;
+};
+
+export interface PostgresDatabase {
+  host: string;
+  port: number;
+  user: string;
+  password: string;
+  database: string;
+  url: string;
+}
+
+export interface RedisNamespace {
+  host: string;
+  port: number;
+  database: number;
+  prefix: string;
+  url: string;
+}
+
+export interface S3Bucket {
+  endpoint: string;
+  bucket: string;
+  accessKey: string;
+  secretKey: string;
+  region: string;
+}
+
+// ---------------------------------------------------------------------------
+// URLs and generated environment
 // ---------------------------------------------------------------------------
 
 export type UrlMode = "portless" | "direct";
 
 export interface UrlContext {
   mode: UrlMode;
-  /** Public URL of this worktree's app. */
   appUrl: string;
-  /** Hostname only, no scheme or port. */
   rootDomain: string;
-  /** Leading-dot cookie domain, or "" when subdomain cookies do not apply. */
   cookieDomain: string;
-  /** e.g. "https://<subdomain>.<rootDomain>" — display and docs. */
   tenantUrlTemplate: string;
-  /** ["<root>", "*.<root>", "*.*.<root>"] for dev-origin allowlists. */
   wildcardOrigins: string[];
   listenHost: string;
-  /** The port the app process must actually bind. */
   listenPort: number;
-  /** Provider-supplied extras, e.g. NODE_EXTRA_CA_CERTS. */
   providerEnv: Record<string, string>;
-  /** Set when the preferred provider was unavailable; shown once to the user. */
   fallbackReason?: string;
 }
 
-// ---------------------------------------------------------------------------
-// Resolved service endpoints
-// ---------------------------------------------------------------------------
-
-export interface PostgresEndpoint {
-  host: string;
-  port: number;
-  user: string;
-  password: string;
-  urlFor(database: string): string;
-}
-
-export interface RedisEndpoint {
-  host: string;
-  port: number;
-  urlFor(db: number): string;
-}
-
-export interface MinioEndpoint {
-  endpoint: string;
-  consoleUrl: string;
-  accessKey: string;
-  secretKey: string;
-  region: string;
-}
-
-export interface MailpitEndpoint {
-  smtpHost: string;
-  smtpPort: number;
-  uiUrl: string;
-}
-
-export interface PlatformEndpoints {
-  postgres?: PostgresEndpoint;
-  redis?: RedisEndpoint;
-  minio?: MinioEndpoint;
-  mailpit?: MailpitEndpoint;
-}
-
-// ---------------------------------------------------------------------------
-// Env profile
-// ---------------------------------------------------------------------------
-
-export interface EnvContext {
+export interface EnvContext<
+  TAdapters extends ResourceAdapters = ResourceAdapters,
+> {
   workspace: WorkspaceIdentity;
-  services: PlatformEndpoints;
+  compose: ComposeContext;
+  resources: ResolvedResources<TAdapters>;
   url: UrlContext;
   /** Parsed base env file (secrets). READ ONLY — WorkTrellis never writes it. */
   baseEnv: Readonly<Record<string, string>>;
 }
 
-/**
- * Returns ONLY WorkTrellis-owned keys. A key mapped to `undefined` is omitted from
- * the generated snapshot entirely (never written as an empty value, which some
- * env loaders treat as "delete this variable").
- */
-export type EnvProfile = (
-  context: EnvContext,
+export type EnvProfile<
+  TAdapters extends ResourceAdapters = ResourceAdapters,
+> = (
+  context: EnvContext<TAdapters>,
 ) => Record<string, string | undefined>;
 
 // ---------------------------------------------------------------------------
-// Processes
+// Foreground development processes
 // ---------------------------------------------------------------------------
 
-/**
- * A command is always a real executable — never a shell string and never a
- * `.cmd`/`.bat` shim. `node` resolves the entry against the project root and
- * runs it with the current Node binary, which is what makes tree-kill reliable.
- */
 export type Command =
   | { node: string[] }
   | { bin: string; args: string[] };
@@ -184,12 +230,13 @@ export interface ReadyCheck {
   timeoutMs?: number;
 }
 
-export interface ProcessSpec {
+export interface ProcessSpec<
+  TAdapters extends ResourceAdapters = ResourceAdapters,
+> {
   name: string;
-  command: Command | ((context: EnvContext) => Command);
-  /** True for the process that must bind url.listenPort. */
+  command: Command | ((context: EnvContext<TAdapters>) => Command);
   bindsAppPort?: boolean;
-  env?: (context: EnvContext) => Record<string, string>;
+  env?: (context: EnvContext<TAdapters>) => Record<string, string>;
   restart?: "never" | "on-crash";
   maxRestarts?: number;
   readyWhen?: ReadyCheck;
@@ -198,31 +245,28 @@ export interface ProcessSpec {
 }
 
 // ---------------------------------------------------------------------------
-// Database bootstrap
+// Project-owned database bootstrap hooks
 // ---------------------------------------------------------------------------
 
 export interface BootstrapContext {
   workspace: WorkspaceIdentity;
   env: Readonly<Record<string, string>>;
-  /** The database this call must target. */
   databaseUrl: string;
   exec(
     bin: string,
     args: string[],
     options?: { env?: Record<string, string> },
   ): Promise<void>;
-  /** Resolve an executable's real entry point from the project's node_modules. */
   bin(name: string): string;
   sql<T = unknown>(text: string, params?: unknown[]): Promise<T[]>;
   log(message: string): void;
 }
 
 export interface BootstrapHooks {
-  /** Files hashed into the template fingerprint; a change rebuilds the template. */
+  /** Name of the resolved PostgreSQL resource used by these hooks. */
+  resource: string;
   schemaFingerprintFiles?: string[];
-  /** Empty database -> fully migrated. */
   migrate?: (context: BootstrapContext) => Promise<void>;
-  /** Post-migration DDL: triggers, LISTEN/NOTIFY installers, extensions. */
   install?: (context: BootstrapContext) => Promise<void>;
   seed?: (context: BootstrapContext) => Promise<void>;
   seeds?: Record<string, (context: BootstrapContext) => Promise<void>>;
@@ -232,7 +276,7 @@ export interface BootstrapHooks {
 }
 
 // ---------------------------------------------------------------------------
-// Doctor
+// Diagnostics and top-level config
 // ---------------------------------------------------------------------------
 
 export interface DoctorResult {
@@ -243,43 +287,41 @@ export interface DoctorResult {
   severity?: "warn" | "fail";
 }
 
-export type DoctorCheck = (context: EnvContext) => Promise<DoctorResult>;
+export type DoctorCheck<
+  TAdapters extends ResourceAdapters = ResourceAdapters,
+> = (context: EnvContext<TAdapters>) => Promise<DoctorResult>;
 
-// ---------------------------------------------------------------------------
-// Top-level config
-// ---------------------------------------------------------------------------
-
-export const WORKTRELLIS_CONFIG_VERSION = 1 as const;
+export const WORKTRELLIS_CONFIG_VERSION = 2 as const;
 export type WorkTrellisConfigVersion = typeof WORKTRELLIS_CONFIG_VERSION;
 
-export interface WorkTrellisConfig {
-  /**
-   * Version of the configuration contract, independent from the npm package.
-   * WorkTrellis refuses unknown versions instead of guessing at their meaning.
-   */
+export interface WorkTrellisConfig<
+  TAdapters extends ResourceAdapters = ResourceAdapters,
+> {
   configVersion: WorkTrellisConfigVersion;
-  /** DNS label. Namespaces databases, buckets, Redis keys, and hostnames. */
+  /** DNS label used to namespace worktrees and scoped infrastructure. */
   project: string;
-  services: ServiceSpec[];
-  env: EnvProfile;
-  processes: ProcessSpec[];
+  compose: ComposeStackSpec[];
+  resources?: TAdapters;
+  env: EnvProfile<TAdapters>;
+  processes: ProcessSpec<TAdapters>[];
   db?: BootstrapHooks;
-  /** Secrets file. Read only, always. Defaults to ".env". */
   baseEnvFile?: string;
-  /** Keys whose conflict with the base env file fails `worktrellis doctor`. */
   criticalKeys?: string[];
-  /** Additional deterministic per-worktree ports, by name. */
-  extraPorts?: string[];
+  /** Additional deterministic ports for foreground project processes. */
+  processPorts?: string[];
   url?: {
     provider?: "portless" | "direct" | "auto";
     wildcard?: boolean;
     basePort?: number;
   };
   gc?: { maxIdleDays?: number };
-  doctor?: DoctorCheck[];
+  doctor?: DoctorCheck<TAdapters>[];
 }
 
-/** Identity helper that gives a project's config file full type inference. */
-export function defineConfig(config: WorkTrellisConfig): WorkTrellisConfig {
+export function defineConfig<
+  const TAdapters extends ResourceAdapters = Record<string, never>,
+>(
+  config: WorkTrellisConfig<TAdapters>,
+): WorkTrellisConfig<TAdapters> {
   return config;
 }

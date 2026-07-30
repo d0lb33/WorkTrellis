@@ -54,32 +54,36 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
     writeSnapshotFile: false,
   });
 
-  const { context, services, env } = prepared;
+  const { context, infrastructure, env } = prepared;
 
   checks.push(
     ok(
-      `${services.engine.name} ${await engineVersion(services.engine)}`,
-      (await engineContext(services.engine))?.endpoint,
+      `${infrastructure.engine.name} ${await engineVersion(infrastructure.engine)}`,
+      (await engineContext(infrastructure.engine))?.endpoint,
     ),
   );
 
   // Services
-  for (const status of services.statuses) {
+  for (const status of infrastructure.statuses) {
     const ports = Object.values(status.ports).join(", ");
     if (!status.running) {
       checks.push(
-        warn(`${status.kind} is not running`, `ports ${ports}`, "pnpm services:up"),
+        warn(
+          `${status.name} (${status.scope}) is not running`,
+          `ports ${ports}`,
+          "worktrellis services up",
+        ),
       );
     } else if (!status.reachable) {
       checks.push(
         fail(
-          `${status.kind} is running but not reachable from this machine`,
-          `${status.detail ?? ""}${services.remoteEngineNote ? ` — ${services.remoteEngineNote}` : ""}`,
+          `${status.name} is running but not reachable from this machine`,
+          `${status.detail ?? ""}${infrastructure.remoteEngineNote ? ` — ${infrastructure.remoteEngineNote}` : ""}`,
           "Check the port forwarding between this machine and the container engine host.",
         ),
       );
     } else {
-      checks.push(ok(`${status.kind} ready`, `ports ${ports}`));
+      checks.push(ok(`${status.name} ready`, `ports ${ports}`));
     }
   }
 
