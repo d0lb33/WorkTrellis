@@ -8,8 +8,8 @@ export interface WorkspaceLocalConfig {
     /**
      * Exact Portless alias below `.localhost`.
      *
-     * For example, `stars-local` resolves to
-     * `https://stars-local.localhost`.
+     * For example, `my-app` resolves to
+     * `https://my-app.localhost`.
      */
     hostname?: string;
   };
@@ -45,7 +45,7 @@ function validateHostname(value: unknown, where: string): string {
   ) {
     usageError(
       `${where} must be a hostname below .localhost, not a URL.`,
-      'Use a value such as "stars-local"; WorkTrellis adds https:// and .localhost.',
+      'Use a value such as "my-app"; WorkTrellis adds https:// and .localhost.',
     );
   }
   if (value.length > 253) {

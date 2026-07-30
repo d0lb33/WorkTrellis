@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { resolveInfoComposeProjects } from "../src/commands/info";
 import { resolvePackageManager } from "../src/commands/misc";
+import { runSelfCheck } from "../src/commands/self-check";
 import { parseArgs } from "../src/core/args";
 import { loadConfig } from "../src/core/config";
 import { buildContext } from "../src/core/context";
@@ -92,6 +93,14 @@ describe("WorkTrellis environment precedence", () => {
     expect(result.combined.WORKTRELLIS_TEST_OWNED).toBe("owned-from-process");
     expect(result.owned.WORKTRELLIS_TEST_OWNED).toBe("owned-from-config");
     expect(result.overriddenByProcess).toEqual(["WORKTRELLIS_TEST_OWNED"]);
+  });
+});
+
+describe("WorkTrellis package boundary", () => {
+  it("keeps host-project vocabulary out of package source", () => {
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    expect(runSelfCheck()).toBe(0);
   });
 });
 
