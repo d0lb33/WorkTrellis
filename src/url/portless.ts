@@ -3,7 +3,10 @@ import os from "node:os";
 import path from "node:path";
 
 import type { UrlContext, WorkspaceIdentity } from "../types";
+import { conflictError } from "../core/errors";
+import { acquireLock, type LockHandle } from "../core/lock";
 import { findAvailablePort } from "../platform/ports";
+import { sha256 } from "../util/hash";
 import { run } from "../util/proc";
 
 /**
@@ -97,11 +100,16 @@ export interface PortlessRegistration {
   url: UrlContext;
   /** Hostname registered with the proxy; must be released on shutdown. */
   aliasName: string;
+  /** Remove the route and relinquish its machine-wide ownership lease. */
+  release: () => Promise<void>;
 }
 
 /** The hostname this workspace uses, without contacting the proxy. */
-export function portlessAliasName(identity: WorkspaceIdentity): string {
-  return `${identity.slug}.${identity.project}`;
+export function portlessAliasName(
+  identity: WorkspaceIdentity,
+  hostname?: string,
+): string {
+  return hostname ?? `${identity.slug}.${identity.project}`;
 }
 
 /**
@@ -114,8 +122,9 @@ export function portlessAliasName(identity: WorkspaceIdentity): string {
 export function previewPortlessUrl(
   identity: WorkspaceIdentity,
   listenPort: number,
+  hostname?: string,
 ): UrlContext {
-  const rootDomain = `${portlessAliasName(identity)}.localhost`;
+  const rootDomain = `${portlessAliasName(identity, hostname)}.localhost`;
 
   return {
     mode: "portless",
@@ -130,9 +139,25 @@ export function previewPortlessUrl(
   };
 }
 
+export async function claimPortlessAlias(
+  aliasName: string,
+  timeoutMs = 250,
+): Promise<LockHandle> {
+  try {
+    return await acquireLock(`url-${sha256(aliasName).slice(0, 16)}`, {
+      timeoutMs,
+    });
+  } catch (caught) {
+    conflictError(
+      `Cannot claim https://${aliasName}.localhost: another WorkTrellis process is already using it.`,
+      `Stop the other worktree or choose a different \`url.hostname\` in .worktrellis/local.json.\n${(caught as Error).message}`,
+    );
+  }
+}
+
 export async function resolvePortlessUrl(
   identity: WorkspaceIdentity,
-  options: { projectRoot: string },
+  options: { projectRoot: string; hostname?: string },
 ): Promise<PortlessRegistration | { failed: true; reason: string }> {
   const probe = probePortless(options.projectRoot);
   if (!probe.available || !probe.binary) {
@@ -154,7 +179,8 @@ export async function resolvePortlessUrl(
   // `<slug>.<project>` keeps dots, so this becomes a three-label hostname and
   // tenant subdomains sit one level deeper — exactly the wildcard depth the
   // proxy resolves.
-  const aliasName = portlessAliasName(identity);
+  const aliasName = portlessAliasName(identity, options.hostname);
+  const lease = await claimPortlessAlias(aliasName);
 
   const registered = await portless(probe.binary, [
     "alias",
@@ -164,6 +190,7 @@ export async function resolvePortlessUrl(
   ]);
 
   if (registered.code !== 0) {
+    lease.release();
     return {
       failed: true,
       reason: `could not register the hostname: ${registered.stderr.trim() || registered.stdout.trim()}`,
@@ -177,6 +204,8 @@ export async function resolvePortlessUrl(
   ]);
 
   if (resolved.code !== 0 || !resolved.stdout.trim()) {
+    await releasePortlessAlias(options.projectRoot, aliasName);
+    lease.release();
     return {
       failed: true,
       reason: "could not read the registered URL back from portless",
@@ -184,7 +213,18 @@ export async function resolvePortlessUrl(
   }
 
   const appUrl = resolved.stdout.trim();
-  const rootDomain = new URL(appUrl).hostname;
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(appUrl);
+  } catch {
+    await releasePortlessAlias(options.projectRoot, aliasName);
+    lease.release();
+    return {
+      failed: true,
+      reason: `portless returned an invalid URL: ${appUrl}`,
+    };
+  }
+  const rootDomain = parsedUrl.hostname;
 
   const providerEnv: Record<string, string> = {};
   const caPath = path.join(stateDir(), "ca.pem");
@@ -199,14 +239,24 @@ export async function resolvePortlessUrl(
     appUrl,
     rootDomain,
     cookieDomain: `.${rootDomain}`,
-    tenantUrlTemplate: `${new URL(appUrl).protocol}//<subdomain>.${rootDomain}`,
+    tenantUrlTemplate: `${parsedUrl.protocol}//<subdomain>.${rootDomain}`,
     wildcardOrigins: [rootDomain, `*.${rootDomain}`, `*.*.${rootDomain}`],
     listenHost: "127.0.0.1",
     listenPort,
     providerEnv,
   };
 
-  return { url, aliasName };
+  let released = false;
+  return {
+    url,
+    aliasName,
+    release: async () => {
+      if (released) return;
+      released = true;
+      await releasePortlessAlias(options.projectRoot, aliasName);
+      lease.release();
+    },
+  };
 }
 
 /** Release a hostname. Alias routes are stored with pid 0, so nothing else reaps them. */

@@ -298,6 +298,32 @@ url: {
 `direct` always uses the port. `portless` treats an unavailable proxy as an
 error.
 
+### Workspace-local hostname
+
+The default Portless hostname includes the fingerprinted workspace slug so
+concurrent worktrees never collide. A developer may opt one checkout into a
+short, local-only hostname with the ignored `.worktrellis/local.json` file:
+
+```json
+{
+  "url": {
+    "hostname": "acme-local"
+  }
+}
+```
+
+The value is the exact Portless alias below `.localhost`, not a URL, so this
+example resolves to `https://acme-local.localhost`. It must contain lowercase
+DNS labels and must omit the scheme, port, path, and `.localhost` suffix.
+
+This setting changes `appUrl`, `rootDomain`, cookie-domain, tenant-template, and
+wildcard-origin values. It does not change the workspace slug, database, Redis
+namespace, bucket, Compose scope, or deterministic process ports.
+
+WorkTrellis holds a machine-wide lease while an alias is active. Starting a
+second worktree with the same override fails instead of repointing the existing
+route. `--direct` bypasses Portless and therefore does not use this hostname.
+
 ## Configuration compatibility
 
 The npm package follows semantic versioning. `configVersion` is a separate

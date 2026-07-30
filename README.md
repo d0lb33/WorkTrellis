@@ -263,6 +263,23 @@ Per-worktree state lives in `<worktree>/.worktrellis`. Machine-wide stack
 definitions, port overrides, locks, logs, and the workspace index live in
 `~/.worktrellis`. Set `WORKTRELLIS_HOME` to override that location.
 
+WorkTrellis owns the generated files in `.worktrellis`, except for
+`.worktrellis/local.json`, which is an optional developer-owned settings file.
+For example, a main checkout can opt into a short Portless URL:
+
+```json
+{
+  "url": {
+    "hostname": "my-project"
+  }
+}
+```
+
+This produces `https://my-project.localhost`. The override changes only the URL;
+the fingerprinted workspace identity and isolated resources remain unchanged.
+Hostname ownership is leased machine-wide, so a second running worktree cannot
+silently repoint the same alias.
+
 The current configuration contract is `configVersion: 2`. Version 1 is rejected
 and old `.devstack` state is not imported. See the
 [v2 migration guide](docs/migration-to-v2.md).

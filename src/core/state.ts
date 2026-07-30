@@ -53,6 +53,7 @@ export function workspacePaths(worktreeRoot: string, workspaceKey?: string) {
 
   return {
     root: base,
+    local: path.join(base, "local.json"),
     env: path.join(base, "env"),
     workspace: path.join(base, "workspace.json"),
     state: path.join(base, "state.json"),

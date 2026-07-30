@@ -3,6 +3,10 @@ import path from "node:path";
 import type { WorkspaceIdentity } from "../types";
 import { loadConfig, type LoadedConfig } from "./config";
 import { resolveIdentity } from "./identity";
+import {
+  loadWorkspaceLocalConfig,
+  type WorkspaceLocalConfig,
+} from "./local-config";
 import { workspacePaths } from "./state";
 import { readEnvFile } from "../util/dotenv";
 import { ensureDirectory } from "../util/fs";
@@ -20,6 +24,8 @@ export interface CommandContext {
   configPath: string;
   identity: WorkspaceIdentity;
   paths: ReturnType<typeof workspacePaths>;
+  /** User-owned, gitignored overrides for this worktree. Never written. */
+  localConfig: WorkspaceLocalConfig;
   /** Parsed secrets file. Never written. */
   baseEnv: Map<string, string>;
   baseEnvPath: string;
@@ -34,6 +40,7 @@ export async function buildContext(options: {
 
   const bootstrapPaths = workspacePaths(loaded.projectRoot);
   ensureDirectory(bootstrapPaths.root);
+  const localConfig = loadWorkspaceLocalConfig(bootstrapPaths.local);
 
   const identity = await resolveIdentity({
     cwd: loaded.projectRoot,
@@ -61,6 +68,7 @@ export async function buildContext(options: {
     configPath: loaded.configPath,
     identity,
     paths,
+    localConfig,
     baseEnv: readEnvFile(baseEnvPath),
     baseEnvPath,
   };

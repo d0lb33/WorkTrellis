@@ -21,6 +21,8 @@ All notable changes to WorkTrellis are documented here. The project follows
 - Automatic object-storage bucket provisioning.
 - Typed, arbitrary resource maps plus a public custom-adapter contract.
 - Protocol helpers for PostgreSQL databases, Redis namespaces, and S3 buckets.
+- Gitignored workspace-local Portless hostname overrides with machine-wide
+  collision leases.
 - A documented responsibility boundary and three acceptance examples,
   including custom Gotenberg composition.
 

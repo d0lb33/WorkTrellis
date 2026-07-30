@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7,7 +8,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolvePackageManager } from "../src/commands/misc";
 import { parseArgs } from "../src/core/args";
 import { loadConfig } from "../src/core/config";
+import { buildContext } from "../src/core/context";
 import { resolveEnv } from "../src/core/env-resolve";
+import { loadWorkspaceLocalConfig } from "../src/core/local-config";
 import { renderStack } from "../src/platform/compose-render";
 import { resolveResources } from "../src/resources";
 import {
@@ -18,6 +21,7 @@ import {
 } from "../src/resources";
 import { Supervisor } from "../src/supervise/supervisor";
 import { resolveUrl } from "../src/url/provider";
+import { claimPortlessAlias } from "../src/url/portless";
 import type {
   ComposeContext,
   EnvContext,
@@ -444,5 +448,104 @@ describe("WorkTrellis URL inspection", () => {
       appUrl: "https://feature-test-deadbeef.test.localhost",
       listenPort: 3210,
     });
+  });
+
+  it("uses a workspace-local hostname override without changing identity", async () => {
+    const config: WorkTrellisConfig = {
+      configVersion: 2,
+      project: "test",
+      compose: [],
+      processes: [],
+      env: () => ({}),
+      url: { provider: "portless" },
+    };
+    const resolved = await resolveUrl({
+      identity: identity(),
+      projectRoot: temporaryDirectory("worktrellis-url-override"),
+      config,
+      hostname: "stars-local",
+      peek: true,
+    });
+
+    expect(resolved.url).toMatchObject({
+      mode: "portless",
+      appUrl: "https://stars-local.localhost",
+      rootDomain: "stars-local.localhost",
+      tenantUrlTemplate: "https://<subdomain>.stars-local.localhost",
+    });
+    expect(identity().slug).toBe("feature-test-deadbeef");
+  });
+
+  it("leases hostname overrides so two running worktrees cannot share one", async () => {
+    const home = temporaryDirectory("worktrellis-hostname-lease");
+    vi.stubEnv("WORKTRELLIS_HOME", home);
+
+    const first = await claimPortlessAlias("stars-local", 10);
+    await expect(claimPortlessAlias("stars-local", 10)).rejects.toThrow(
+      /another WorkTrellis process is already using it/,
+    );
+
+    first.release();
+    const next = await claimPortlessAlias("stars-local", 10);
+    next.release();
+  });
+});
+
+describe("WorkTrellis workspace-local configuration", () => {
+  it("loads a valid gitignored hostname override", () => {
+    const directory = temporaryDirectory("worktrellis-local-config");
+    const file = path.join(directory, "local.json");
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ url: { hostname: "stars-local" } }),
+    );
+
+    expect(loadWorkspaceLocalConfig(file)).toEqual({
+      url: { hostname: "stars-local" },
+    });
+  });
+
+  it("wires the local override into the command context", async () => {
+    const directory = temporaryDirectory("worktrellis-local-context");
+    execFileSync("git", ["init", "--quiet"], { cwd: directory });
+    fs.writeFileSync(
+      path.join(directory, "worktrellis.config.mjs"),
+      `export default {
+        configVersion: 2,
+        project: "test",
+        compose: [],
+        env: () => ({}),
+        processes: []
+      };`,
+    );
+    fs.mkdirSync(path.join(directory, ".worktrellis"));
+    fs.writeFileSync(
+      path.join(directory, ".worktrellis", "local.json"),
+      JSON.stringify({ url: { hostname: "test-local" } }),
+    );
+
+    const context = await buildContext({ cwd: directory });
+
+    expect(context.localConfig.url?.hostname).toBe("test-local");
+    expect(context.identity.slug).not.toBe("test-local");
+  });
+
+  it("rejects URLs, localhost suffixes, and unknown keys", () => {
+    const directory = temporaryDirectory("worktrellis-local-config-invalid");
+    const file = path.join(directory, "local.json");
+
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ url: { hostname: "https://stars-local.localhost/" } }),
+    );
+    expect(() => loadWorkspaceLocalConfig(file)).toThrow(
+      /hostname below \.localhost, not a URL/,
+    );
+
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ url: { hostName: "stars-local" } }),
+    );
+    expect(() => loadWorkspaceLocalConfig(file)).toThrow(/unknown key/i);
   });
 });

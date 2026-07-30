@@ -13,6 +13,11 @@ Each repository using WorkTrellis should commit:
 Do not commit `.worktrellis/env`, machine port overrides, database dumps, or
 real secrets.
 
+Developers may create `.worktrellis/local.json` for explicitly local choices
+such as a short Portless hostname. It remains ignored with the rest of the
+directory and must not be required for the committed project configuration to
+work.
+
 ## Recommended package scripts
 
 ```json
@@ -91,6 +96,7 @@ shared WorkTrellis package.
 Treat `worktrellis.config.ts`, project Compose files, restore scripts, and the
 lockfile as reviewed source code. Keep machine-specific choices in
 `~/.worktrellis/machine.json`, normally through `worktrellis services adopt`.
+Keep worktree-specific choices in `.worktrellis/local.json`.
 
 Choose the narrowest useful Compose scope:
 

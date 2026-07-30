@@ -182,7 +182,7 @@ export async function runUp(options: UpOptions): Promise<number> {
       slug: identity.slug,
       root: identity.root,
     },
-    aliases: [],
+    aliases: url.aliasName ? [url.aliasName] : [],
     prefix: options.prefix,
     raw: options.raw,
   });

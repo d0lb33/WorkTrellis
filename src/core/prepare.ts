@@ -58,6 +58,7 @@ export async function prepareWorkspace(options: {
     projectRoot: context.projectRoot,
     config: context.config,
     preference: options.urlPreference,
+    hostname: context.localConfig.url?.hostname,
     peek: options.peekUrl,
     live: liveUrl,
   });

@@ -3,12 +3,13 @@ import { WorkTrellisError } from "../core/errors";
 import { resolveDirectUrl } from "./direct";
 import {
   previewPortlessUrl,
-  releasePortlessAlias,
   resolvePortlessUrl,
 } from "./portless";
 
 export interface ResolvedUrl {
   url: UrlContext;
+  /** Portless alias claimed by this run, if any. */
+  aliasName?: string;
   /** Called on shutdown to release any registration the provider made. */
   release: () => Promise<void>;
 }
@@ -28,6 +29,8 @@ export async function resolveUrl(options: {
   projectRoot: string;
   config: WorkTrellisConfig;
   preference?: UrlPreference;
+  /** Workspace-local exact Portless alias below `.localhost`. */
+  hostname?: string;
   /**
    * Report the URL without claiming it: no port is bound and no route is
    * registered. Read-only commands must use this — re-registering a hostname
@@ -60,7 +63,7 @@ export async function resolveUrl(options: {
               listenPort,
               providerEnv: {},
             }
-          : previewPortlessUrl(options.identity, listenPort),
+          : previewPortlessUrl(options.identity, listenPort, options.hostname),
       release: async () => {},
     };
   }
@@ -71,6 +74,7 @@ export async function resolveUrl(options: {
 
   const attempt = await resolvePortlessUrl(options.identity, {
     projectRoot: options.projectRoot,
+    hostname: options.hostname,
   });
 
   if ("failed" in attempt) {
@@ -91,6 +95,7 @@ export async function resolveUrl(options: {
 
   return {
     url: attempt.url,
-    release: () => releasePortlessAlias(options.projectRoot, attempt.aliasName),
+    aliasName: attempt.aliasName,
+    release: attempt.release,
   };
 }
