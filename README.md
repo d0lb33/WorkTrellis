@@ -2,11 +2,10 @@
 
 # WorkTrellis
 
-### One command. Every worktree. No collisions.
+### Stop memorizing localhost ports.
 
-Run several branches of the same application at once, with isolated databases,
-cache keys, object-storage buckets, URLs, ports, and process trees—without
-duplicating infrastructure that can safely be shared.
+Run every local project—and every worktree—with a stable URL, coordinated
+ports, isolated data, and one familiar development command.
 
 [![CI](https://github.com/d0lb33/WorkTrellis/actions/workflows/ci.yml/badge.svg)](https://github.com/d0lb33/WorkTrellis/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/worktrellis)](https://www.npmjs.com/package/worktrellis)
@@ -17,15 +16,36 @@ duplicating infrastructure that can safely be shared.
 
 ---
 
-Git worktrees make parallel branches cheap. Most local-development environments
-still assume there is only one checkout.
+Most developers do not run one thing at a time. The product app, API, admin
+portal, documentation site, client project, and side project all want a small
+set of familiar ports:
 
-Open a second worktree and suddenly both branches want port 3000, both point at
-the same database, both consume the same queue, and both write to the same
-bucket. The first app may keep running while the second quietly mutates its
-data.
+```text
+localhost:3000  — which project is this today?
+localhost:3001  — did I choose this or did the framework?
+localhost:5173  — is that the app, docs, or yesterday's process?
+localhost:5432  — which project's database is using it?
+```
 
-WorkTrellis turns a repository's local environment into something worktree-aware:
+Open another project and ports collide. Open another worktree and the problem
+expands to data: both branches may point at the same database, consume the same
+queue, write to the same bucket, or share authentication cookies.
+
+WorkTrellis gives every Git working tree—including the normal main checkout—an
+identity. It chooses stable application ports, coordinates project-owned
+Compose stacks, and builds the environment the current checkout needs. Add
+Portless, optionally pin short local names, and you stop thinking about
+application ports entirely:
+
+```text
+https://storefront.localhost
+https://admin.localhost
+https://docs.localhost
+https://checkout-redesign.storefront.localhost
+```
+
+For projects with stateful infrastructure, it also turns shared containers into
+isolated development environments:
 
 ```text
                     one compatible Compose stack
@@ -33,20 +53,21 @@ WorkTrellis turns a repository's local environment into something worktree-aware
                                   │
                  ┌────────────────┼────────────────┐
                  │                │                │
-            main worktree    feature worktree   bugfix worktree
+            main checkout    feature worktree   bugfix worktree
             own database     own database       own database
             own Redis slice  own Redis slice    own Redis slice
             own bucket       own bucket         own bucket
             own URL + port   own URL + port     own URL + port
 ```
 
-You keep using Docker Compose, your existing application commands, and your
-project's `.env`. WorkTrellis coordinates the pieces that must differ between
-worktrees and shares the pieces that do not.
+You keep using Docker Compose, your existing application commands, and each
+project's `.env`. WorkTrellis coordinates the local machine resources that must
+differ and shares the infrastructure that does not.
 
 ## The pitch
 
-After a project is configured, every checkout starts the same way:
+After a project is configured, it starts the same way as every other
+WorkTrellis-enabled project:
 
 ```bash
 pnpm dev
@@ -54,53 +75,70 @@ pnpm dev
 
 WorkTrellis then:
 
-- identifies the current repository and worktree;
+- identifies the current project, repository, and working tree;
 - starts or reuses the correctly scoped Compose stacks;
-- publishes deterministic, loopback-only host ports;
+- assigns deterministic app ports and publishes loopback-only service ports;
 - provisions an isolated logical database, Redis namespace, and bucket;
 - generates the worktree's URLs and derived environment;
 - starts the app and worker as one supervised process group; and
 - cleans up verified leftovers from interrupted runs.
 
-The result is boring in the best way: developers and coding agents can open
-another worktree without negotiating ports or wondering which branch owns the
-data they are looking at.
+The result is boring in the best way: developers and coding agents can start
+another project or worktree without negotiating ports, maintaining a localhost
+cheat sheet, or wondering which checkout owns the data they are looking at.
+
+### You do not need to use linked worktrees
+
+A repository's ordinary checkout is its main Git worktree. Configure
+WorkTrellis in several unrelated projects and each one receives its own project
+namespace, stable ports, URL, environment, and supervised process tree.
+
+Linked worktrees are where data isolation becomes especially valuable, but
+with Portless the day-one payoff can be as simple as this:
+
+> Run `pnpm dev` in any project and open its name—not a port number.
 
 ## Where WorkTrellis shines
 
-### 1. Developing two features at the same time
+### 1. Running several real projects on one laptop
+
+Keep a storefront, API, admin portal, documentation site, and client project
+running together. WorkTrellis assigns stable ports and detects conflicts;
+Portless gives each app a memorable `.localhost` URL.
+
+### 2. Developing two features at the same time
 
 Keep `main` running for comparison while a feature branch changes the schema,
 background worker, or authentication flow. Each branch gets its own data and
 application URL, so testing one does not disturb the other.
 
-### 2. Agentic and parallel coding workflows
+### 3. Agentic and parallel coding workflows
 
 Give multiple coding agents separate Git worktrees. They can all run the
 project's normal development command without guessing ports, sharing test data,
 or killing one another's servers.
 
-### 3. Applications with a shared local infrastructure stack
+### 4. Applications with a shared local infrastructure stack
 
 PostgreSQL, Redis, S3-compatible storage, and mail capture are inexpensive to
 share at the container level but dangerous to share at the data level.
 WorkTrellis reuses compatible containers while isolating databases, Redis
 prefixes/logical databases, and buckets.
 
-### 4. Dependencies that cannot be logically partitioned
+### 5. Dependencies that cannot be logically partitioned
 
 Some services do not have a useful namespace or database concept. Give their
 Compose stack `scope: "workspace"` and WorkTrellis will run one Compose project
 per worktree with distinct host ports.
 
-### 5. Teams that want one reliable onboarding command
+### 6. Teams that want one reliable onboarding command
 
 Project configuration documents the required services, ports, resource
 isolation, generated variables, processes, and health checks. A new developer
 can clone, create `.env`, run `worktrellis doctor`, and use the same `pnpm dev`
 as everyone else.
 
-### 6. Testing from another device
+### 7. Testing from another device
 
 Portless-backed apps can be shared temporarily through Tailscale:
 
@@ -116,11 +154,11 @@ cleanup.
 
 | WorkTrellis coordinates | Your project or existing tools own |
 | --- | --- |
-| Worktree and repository identity | Compose services, images, networks, and volumes |
+| Project, repository, and worktree identity | Compose services, images, networks, and volumes |
 | Machine, repository, and workspace scopes | Application and worker commands |
 | Deterministic host ports | Secrets and `.env` |
 | Logical resource isolation | Schema migrations, seeds, and data restore policy |
-| Generated worktree environment | Portless routing, certificates, and remote sharing |
+| Generated workspace environment | Portless routing, certificates, and remote sharing |
 | Foreground process supervision and orphan cleanup | Production deployment and orchestration |
 
 That boundary is intentional. WorkTrellis is a local coordination layer, not a
@@ -450,13 +488,15 @@ Normal status and diagnostic output redacts credentials.
 5. **Becoming your workflow or build system.** Use your package manager,
    Turborepo, Nx, CI platform, or domain workflow engine for general task
    graphs. WorkTrellis is narrowly responsible for coordinating and isolating
-   local Git worktrees.
+   local Git working trees.
 
 The boundary test is simple:
 
 > Does this coordinate or isolate Git worktrees?
 
-If not, it probably belongs somewhere else.
+Git calls every normal repository checkout its main worktree; linked worktrees
+are the parallel form. If a feature does not help coordinate or isolate those
+local working environments, it probably belongs somewhere else.
 
 ## State and compatibility
 
