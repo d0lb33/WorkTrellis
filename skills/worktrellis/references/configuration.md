@@ -1,0 +1,306 @@
+# Configuration patterns
+
+## Contents
+
+- Minimal shape
+- Compose stacks and ports
+- Built-in resources
+- Generated environment
+- Processes
+- Database hooks
+- URLs and local choices
+- Custom adapters
+
+## Minimal shape
+
+WorkTrellis loads the first `worktrellis.config.ts`, `.mts`, `.js`, or `.mjs`
+found from the current directory upward.
+
+```ts
+import { defineConfig } from "worktrellis";
+
+export default defineConfig({
+  configVersion: 3,
+  project: "acme",
+  compose: [],
+  env: ({ url }) => ({
+    PORT: String(url.listenPort),
+    APP_URL: url.appUrl,
+  }),
+  processes: [],
+});
+```
+
+Do not assume an empty Compose list permits Docker-free operation. Verify the
+installed WorkTrellis release and its diagnostics before recommending that
+shape.
+
+Top-level responsibilities:
+
+| Field | Purpose |
+| --- | --- |
+| `configVersion` | Public configuration protocol, currently `3` |
+| `project` | Stable DNS-safe identity |
+| `baseEnvFile` | Read-only secret input, default `.env` |
+| `compose` | Project-owned Compose stacks and named ports |
+| `resources` | Optional logical isolation adapters |
+| `env` | Derived workspace environment |
+| `processes` | Foreground local processes |
+| `processPorts` | Additional deterministic host-process ports |
+| `db` | Project-owned PostgreSQL lifecycle hooks |
+| `criticalKeys` | Derived keys that must not conflict with `.env` |
+| `url` | Direct or Portless URL selection |
+| `doctor` | Project-specific diagnostic checks |
+| `gc` | Inactive workspace retention |
+
+## Compose stacks and ports
+
+Define a project-local helper for required base environment values:
+
+```ts
+const requiredEnv = (
+  env: Readonly<Record<string, string>>,
+  key: string,
+): string => {
+  const value = env[key]?.trim();
+  if (!value) throw new Error(`Missing required environment variable: ${key}`);
+  return value;
+};
+```
+
+Name only the missing key in the error. Never include the value.
+
+```ts
+compose: [
+  {
+    name: "infrastructure",
+    scope: "machine",
+    files: ["compose.worktrellis.yml"],
+    env: {
+      POSTGRES_USER: ({ baseEnv }) =>
+        requiredEnv(baseEnv, "POSTGRES_USER"),
+      POSTGRES_PASSWORD: ({ baseEnv }) =>
+        requiredEnv(baseEnv, "POSTGRES_PASSWORD"),
+    },
+    ports: {
+      database: {
+        service: "postgres",
+        containerPort: 5432,
+        probe: { kind: "postgres" },
+      },
+      cache: {
+        service: "redis",
+        containerPort: 6379,
+        probe: { kind: "redis" },
+      },
+      storage: {
+        service: "minio",
+        containerPort: 9000,
+        probe: { kind: "http", path: "/minio/health/live" },
+      },
+      mail: {
+        service: "mailpit",
+        containerPort: 1025,
+        probe: { kind: "smtp" },
+      },
+    },
+  },
+],
+```
+
+Port names are project vocabulary. The service name must match merged Compose.
+Omit `hostPort` for deterministic allocation. Use a fixed `hostPort` only when
+an external tool truly requires it and accept the collision risk.
+
+WorkTrellis publishes declared ports on loopback. Remove corresponding host
+port mappings from the project Compose files.
+
+## Built-in resources
+
+```ts
+import {
+  postgresDatabase,
+  redisNamespace,
+  s3Bucket,
+} from "worktrellis";
+
+resources: {
+  database: postgresDatabase({
+    endpoint: { stack: "infrastructure", port: "database" },
+    isolation: "database",
+    user: ({ baseEnv }) => requiredEnv(baseEnv, "POSTGRES_USER"),
+    password: ({ baseEnv }) =>
+      requiredEnv(baseEnv, "POSTGRES_PASSWORD"),
+  }),
+  cache: redisNamespace({
+    endpoint: { stack: "infrastructure", port: "cache" },
+    isolation: "namespace",
+    databaseCount: 16,
+  }),
+  uploads: s3Bucket({
+    endpoint: { stack: "infrastructure", port: "storage" },
+    isolation: "bucket",
+    accessKey: ({ baseEnv }) => requiredEnv(baseEnv, "S3_ACCESS_KEY"),
+    secretKey: ({ baseEnv }) => requiredEnv(baseEnv, "S3_SECRET_KEY"),
+    region: "us-east-1",
+  }),
+},
+```
+
+Resource keys are arbitrary and remain type-safe. Credentials are mandatory
+project inputs, not image-specific defaults. Ensure `.env.example`,
+`compose[].env`, Compose interpolation, and resource adapters agree about
+whether an empty value is valid. It normally is not.
+
+Use `compose.url(stack, port, scheme?)` or
+`compose.stacks[stack].ports[port]` for endpoint-only services.
+
+## Generated environment
+
+```ts
+env: ({ workspace, compose, resources, url, baseEnv }) => ({
+  DATABASE_URL: resources.database.url,
+  REDIS_URL: resources.cache.url,
+  REDIS_KEY_PREFIX: `${resources.cache.prefix}:`,
+  S3_ENDPOINT: resources.uploads.endpoint,
+  S3_BUCKET: resources.uploads.bucket,
+  MAIL_PORT: String(compose.stacks.infrastructure!.ports.mail),
+  PORT: String(url.listenPort),
+  APP_URL: url.appUrl,
+  COOKIE_PREFIX: `acme-${workspace.slug}`,
+  OPTIONAL_PUBLIC_VALUE: baseEnv.OPTIONAL_PUBLIC_VALUE,
+}),
+```
+
+Return only derived values and secret values the child process actually needs.
+The base environment file remains read-only. WorkTrellis writes its generated
+snapshot to ignored `.worktrellis/env`. A real process environment variable
+retains highest precedence.
+
+Use `criticalKeys` for derived variables whose stale definition in `.env`
+would defeat isolation:
+
+```ts
+criticalKeys: [
+  "DATABASE_URL",
+  "REDIS_URL",
+  "REDIS_KEY_PREFIX",
+  "S3_BUCKET",
+  "APP_URL",
+  "PORT",
+],
+```
+
+## Processes
+
+```ts
+processes: [
+  {
+    name: "app",
+    bindsAppPort: true,
+    color: "blue",
+    command: {
+      node: ["node_modules/example-framework/bin.js", "dev"],
+    },
+    readyWhen: {
+      logMatch: /ready|listening/i,
+      timeoutMs: 120_000,
+    },
+    restart: "on-crash",
+    maxRestarts: 2,
+  },
+  {
+    name: "worker",
+    color: "magenta",
+    command: {
+      node: ["node_modules/tsx/dist/cli.mjs", "watch", "src/worker.ts"],
+    },
+  },
+],
+```
+
+Confirm actual entrypoint paths against the installed dependency. Do not copy
+the placeholder framework path.
+
+A command can also be `{ bin: "executable", args: [...] }` or a callback using
+resolved context. Avoid shell-specific syntax. Use a checked-in script for
+pipes, redirects, and compound behavior.
+
+## Database hooks
+
+```ts
+db: {
+  resource: "database",
+  schemaFingerprintFiles: ["prisma/schema.prisma", "prisma/migrations"],
+  migrate: (context) =>
+    context.exec(context.bin("prisma"), ["migrate", "deploy"]),
+  seed: (context) =>
+    context.exec(context.bin("tsx"), ["prisma/seed.ts"]),
+  seeds: {
+    demo: (context) =>
+      context.exec(context.bin("tsx"), ["prisma/demo-seed.ts"]),
+  },
+},
+```
+
+Use the project's actual migration command. Hooks receive the resolved
+database URL. Keep dump download, validation, sanitization, and restore policy
+in project scripts, then invoke them with `worktrellis run`.
+
+## URLs and local choices
+
+```ts
+url: {
+  provider: "auto",
+  wildcard: true,
+  basePort: 3000,
+},
+```
+
+- `auto`: prefer Portless and fall back to a deterministic direct URL.
+- `direct`: always use a localhost port.
+- `portless`: require Portless and fail if unavailable.
+
+The default Portless name includes the fingerprinted workspace slug. Override
+one ignored checkout in `.worktrellis/local.json`:
+
+```json
+{
+  "url": {
+    "hostname": "acme-local",
+    "tailscale": false
+  }
+}
+```
+
+The hostname is the exact Portless alias below `.localhost`. Omit scheme,
+port, path, and `.localhost`.
+
+Set `tailscale: true` only as a personal opt-in. Prefer leaving it false and
+running `worktrellis up --tailscale` for a temporary private share.
+
+## Custom adapters
+
+Use a custom adapter only for protocol-level logical isolation:
+
+```ts
+import { defineResourceAdapter } from "worktrellis";
+
+const searchIndex = (endpoint: { stack: string; port: string }) =>
+  defineResourceAdapter({
+    kind: "search-index",
+    isolation: "index",
+    endpoint,
+    resolve: ({ workspace, endpoint }) => ({
+      url: endpoint.url(),
+      index: `${workspace.project}-${workspace.slug}`,
+    }),
+    describe: (resource) => `index ${resource.index}`,
+    async provision(resource) {
+      // Idempotently ensure only this logical index.
+    },
+  });
+```
+
+Keep `resolve` synchronous and side-effect-free. Make `provision` idempotent.
+Do not select a container image or own a service definition in an adapter.

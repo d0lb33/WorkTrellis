@@ -5,6 +5,12 @@ All notable changes to WorkTrellis are documented here. The project follows
 
 ## Unreleased
 
+### Added
+
+- An installable `worktrellis` AI agent skill for adopting, validating,
+  migrating, and troubleshooting project setups while preserving the
+  WorkTrellis, Compose, Portless, and application responsibility boundaries.
+
 ## 0.3.0 - 2026-07-30
 
 ### Breaking

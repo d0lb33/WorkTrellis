@@ -166,6 +166,36 @@ new infrastructure platform.
 
 ## Quick start
 
+### Let your coding agent set it up
+
+Install the WorkTrellis skill from this repository with the
+[open agent skills CLI](https://github.com/vercel-labs/skills):
+
+```bash
+npx skills add d0lb33/WorkTrellis --skill worktrellis
+```
+
+The installer detects Codex, Claude Code, Cursor, and other supported coding
+agents. To make the skill available across all projects, add `--global`. To
+target one agent without prompts:
+
+```bash
+npx skills add d0lb33/WorkTrellis --skill worktrellis --global --agent codex --yes
+```
+
+Then ask:
+
+```text
+Use $worktrellis to configure this project for stable ports, isolated local
+services, and safe concurrent worktrees.
+```
+
+The skill inspects the existing app, Compose files, package scripts, and
+environment contract before making changes. It keeps Compose, secrets,
+Portless, and Tailscale responsibilities in the right tools. Installing the
+skill teaches the agent how to integrate WorkTrellis; the agent will still add
+the pinned `worktrellis` development dependency to the project it configures.
+
 ### Requirements
 
 - Node.js 22 or newer
