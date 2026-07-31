@@ -4,7 +4,7 @@
 
 ### Stop memorizing localhost ports.
 
-Run every local project—and every worktree—with a stable URL, coordinated
+Run every local project and every worktree with a stable URL, coordinated
 ports, isolated data, and one familiar development command.
 
 [![CI](https://github.com/d0lb33/WorkTrellis/actions/workflows/ci.yml/badge.svg)](https://github.com/d0lb33/WorkTrellis/actions/workflows/ci.yml)
@@ -21,18 +21,18 @@ portal, documentation site, client project, and side project all want a small
 set of familiar ports:
 
 ```text
-localhost:3000  — which project is this today?
-localhost:3001  — did I choose this or did the framework?
-localhost:5173  — is that the app, docs, or yesterday's process?
-localhost:5432  — which project's database is using it?
+localhost:3000  which project is this today?
+localhost:3001  did I choose this or did the framework?
+localhost:5173  is that the app, docs, or yesterday's process?
+localhost:5432  which project's database is using it?
 ```
 
 Open another project and ports collide. Open another worktree and the problem
 expands to data: both branches may point at the same database, consume the same
 queue, write to the same bucket, or share authentication cookies.
 
-WorkTrellis gives every Git working tree—including the normal main checkout—an
-identity. It chooses stable application ports, coordinates project-owned
+WorkTrellis gives every Git working tree, including the normal main checkout,
+an identity. It chooses stable application ports, coordinates project-owned
 Compose stacks, and builds the environment the current checkout needs. Add
 Portless, optionally pin short local names, and you stop thinking about
 application ports entirely:
@@ -96,7 +96,7 @@ namespace, stable ports, URL, environment, and supervised process tree.
 Linked worktrees are where data isolation becomes especially valuable, but
 with Portless the day-one payoff can be as simple as this:
 
-> Run `pnpm dev` in any project and open its name—not a port number.
+> Run `pnpm dev` in any project and open its name, not a port number.
 
 ## Where WorkTrellis shines
 
@@ -150,7 +150,7 @@ WorkTrellis supplies the worktree-safe name and app port. Portless owns the
 local route, certificates, Tailscale Serve configuration, remote URL, and
 cleanup.
 
-## What it owns—and what it leaves alone
+## What it owns and what it leaves alone
 
 | WorkTrellis coordinates | Your project or existing tools own |
 | --- | --- |
