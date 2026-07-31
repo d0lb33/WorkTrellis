@@ -7,7 +7,7 @@ found while walking from the current directory to the filesystem root.
 import { defineConfig } from "worktrellis";
 
 export default defineConfig({
-  configVersion: 2,
+  configVersion: 3,
   // ...
 });
 ```
@@ -16,7 +16,7 @@ export default defineConfig({
 
 | Field | Required | Purpose |
 | --- | --- | --- |
-| `configVersion` | yes | Configuration contract version; currently `2` |
+| `configVersion` | yes | Configuration contract version; currently `3` |
 | `project` | yes | DNS-safe namespace for identities and hostnames |
 | `compose` | yes | Scoped project-owned Compose stacks |
 | `resources` | no | Named logical resource adapters |
@@ -328,9 +328,46 @@ This setting changes `appUrl`, `rootDomain`, cookie-domain, tenant-template, and
 wildcard-origin values. It does not change the workspace slug, database, Redis
 namespace, bucket, Compose scope, or deterministic process ports.
 
-WorkTrellis holds a machine-wide lease while an alias is active. Starting a
-second worktree with the same override fails instead of repointing the existing
-route. `--direct` bypasses Portless and therefore does not use this hostname.
+WorkTrellis supplies this exact name and its deterministic app port to
+Portless. Portless owns route conflict detection, registration, and cleanup;
+it rejects a second live process that requests the same hostname rather than
+allowing WorkTrellis to overwrite it. `--direct` bypasses Portless and therefore
+does not use this hostname.
+
+### Private Tailscale access
+
+Every Portless-backed `worktrellis up` runs the configured port-binding process
+through Portless, which owns proxy startup, local route registration, framework
+adaptation, and cleanup. `--tailscale` additionally selects Portless's native
+private-sharing mode. WorkTrellis supplies only the name and fixed app port
+because it owns worktree identity and process supervision. It does not invoke
+Tailscale, inspect Serve state, choose the remote port, derive the remote URL,
+or clean up either route.
+
+Portless prints the private URL and supplies `PORTLESS_TAILSCALE_URL` to the
+wrapped app. Its normal rules apply, including use of additional HTTPS ports
+when another shared app already occupies port 443. This mode requires the
+Portless provider, Node 24 or newer, and a working Portless Tailscale setup.
+Because sharing is explicit, WorkTrellis fails the launch if those
+prerequisites are unavailable instead of falling back to a local-only URL.
+
+To make exposure the default for only one ignored worktree, use:
+
+```json
+{
+  "url": {
+    "hostname": "acme-local",
+    "tailscale": true
+  }
+}
+```
+
+Portless removes its local route and Tailscale Serve route when the supervised
+app exits. If WorkTrellis discovers an orphan after its supervisor has already
+stopped, it still gives the verified wrapper a cooperative cleanup window
+before using a forceful process-tree kill. On POSIX systems that means
+signalling the wrapper; on Windows, WorkTrellis stops the wrapper's owned
+application tree so Portless can observe the exit and clean up naturally.
 
 ## Configuration compatibility
 
@@ -341,4 +378,6 @@ integer protocol:
 - a breaking interpretation requires a new version;
 - unsupported versions fail before infrastructure is changed.
 
-WorkTrellis 0.2 accepts only `configVersion: 2`.
+WorkTrellis 0.3 accepts only `configVersion: 3`. See the
+[v3 migration guide](migration-to-v3.md) for the credential and JSON-output
+changes.

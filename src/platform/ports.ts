@@ -110,6 +110,27 @@ export async function waitForPort(
   return false;
 }
 
+/** Wait until nothing accepts TCP connections on `port`. */
+export async function waitForPortClose(
+  port: number,
+  {
+    host = "127.0.0.1",
+    timeoutMs = 2_000,
+    intervalMs = 100,
+  }: { host?: string; timeoutMs?: number; intervalMs?: number } = {},
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    if (!(await canConnect(port, host, Math.min(intervalMs * 4, 500)))) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+
+  return !(await canConnect(port, host, 250));
+}
+
 export function canConnect(
   port: number,
   host = "127.0.0.1",

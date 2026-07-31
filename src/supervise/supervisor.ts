@@ -5,11 +5,20 @@ import { StringDecoder } from "node:string_decoder";
 
 import type { Command, EnvContext, ProcessSpec } from "../types";
 import { WorkTrellisError } from "../core/errors";
+import { redactDiagnosticText } from "../core/env-resolve";
 import { ensureDirectory } from "../util/fs";
 import { c, info, NAMED_COLORS, PROCESS_COLORS, type Colorize } from "../util/log";
 import { canConnect } from "../platform/ports";
-import { IS_WINDOWS, killTree } from "../util/proc";
+import {
+  IS_WINDOWS,
+  killTree,
+  requestCooperativeTreeShutdown,
+} from "../util/proc";
 import { writeRunRecord, type RunChild, type RunRecord } from "./reaper";
+import {
+  clearShutdownRequest,
+  consumeShutdownRequest,
+} from "./shutdown";
 
 /**
  * Runs the project's dev processes and guarantees they all die together.
@@ -37,6 +46,7 @@ export interface SupervisorOptions {
   env: Record<string, string>;
   envContext: EnvContext;
   runFile: string;
+  stopFile?: string;
   logDirectory: string;
   identity: { project: string; slug: string; root: string };
   aliases: string[];
@@ -83,6 +93,10 @@ export class Supervisor {
   private readonly restartTimestamps = new Map<string, number[]>();
   private shuttingDown = false;
   private stopped: ((code: number) => void) | null = null;
+  private stopRequestTimer: NodeJS.Timeout | null = null;
+  private readonly startedAtMs = Math.round(
+    Date.now() - process.uptime() * 1_000,
+  );
   private labelWidth = 6;
 
   constructor(options: SupervisorOptions) {
@@ -117,6 +131,7 @@ export class Supervisor {
     const completion = new Promise<number>((resolve) => {
       this.stopped = resolve;
     });
+    this.prepareForRun();
 
     // Start in dependency order, waiting for each dependency to report ready
     // before its dependents launch.
@@ -127,11 +142,43 @@ export class Supervisor {
       }
       if (this.shuttingDown) break;
       this.start(entry);
+      this.persistRunRecord();
     }
 
-    this.persistRunRecord();
     this.finishIfAllStopped();
     return completion;
+  }
+
+  get supervisorStartedAt(): number {
+    return this.startedAtMs;
+  }
+
+  /** Persist the supervisor identity before live state makes the run visible. */
+  prepareForRun(): void {
+    this.startStopRequestWatcher();
+    this.persistRunRecord();
+  }
+
+  private startStopRequestWatcher(): void {
+    const stopFile = this.options.stopFile;
+    if (!stopFile || this.stopRequestTimer) return;
+
+    clearShutdownRequest(stopFile);
+    this.stopRequestTimer = setInterval(() => {
+      const requested = consumeShutdownRequest(stopFile, {
+        supervisorPid: process.pid,
+        supervisorStartedAt: this.startedAtMs,
+      });
+      if (requested) void this.shutdown(0);
+    }, 100);
+  }
+
+  private stopStopRequestWatcher(): void {
+    if (this.stopRequestTimer) {
+      clearInterval(this.stopRequestTimer);
+      this.stopRequestTimer = null;
+    }
+    if (this.options.stopFile) clearShutdownRequest(this.options.stopFile);
   }
 
   /** Topological order over the already-validated `dependsOn` graph. */
@@ -233,7 +280,10 @@ export class Supervisor {
     this.pipe(entry, child, "stderr");
 
     child.once("error", (caught) => {
-      this.write(entry, `failed to start: ${caught.message}`);
+      this.write(
+        entry,
+        `failed to start: ${redactDiagnosticText(caught.message, env)}`,
+      );
       entry.state = "failed";
       this.onExit(entry, 1);
     });
@@ -395,6 +445,7 @@ export class Supervisor {
     );
     if (running) return;
 
+    this.stopStopRequestWatcher();
     for (const stream of this.logStreams.values()) stream.end();
     const resolve = this.stopped;
     this.stopped = null;
@@ -412,7 +463,7 @@ export class Supervisor {
     const live = [...this.processes.values()].filter((entry) => entry.pid !== null);
 
     for (const entry of live) {
-      if (entry.pid) killTree(entry.pid, "SIGTERM");
+      if (entry.pid) requestCooperativeTreeShutdown(entry.pid);
     }
 
     // Give them a moment to exit on their own, then insist.
@@ -453,7 +504,7 @@ export class Supervisor {
 
     const record: RunRecord = {
       supervisorPid: process.pid,
-      supervisorStartedAt: Date.now(),
+      supervisorStartedAt: this.startedAtMs,
       project: this.options.identity.project,
       slug: this.options.identity.slug,
       worktreeRoot: this.options.identity.root,

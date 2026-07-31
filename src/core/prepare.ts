@@ -31,10 +31,10 @@ export async function prepareWorkspace(options: {
   configPath?: string;
   startServices?: boolean;
   urlPreference?: UrlPreference;
+  tailscale?: boolean;
   /**
-   * Report the URL without claiming it. Read-only commands MUST set this:
-   * allocating a port and re-registering the hostname would repoint a running
-   * app's live URL at a port nothing is listening on.
+   * Report the URL without contacting or mutating its provider. Read-only
+   * commands MUST set this.
    */
   peekUrl?: boolean;
   writeSnapshotFile?: boolean;
@@ -59,6 +59,8 @@ export async function prepareWorkspace(options: {
     config: context.config,
     preference: options.urlPreference,
     hostname: context.localConfig.url?.hostname,
+    tailscale:
+      options.tailscale ?? context.localConfig.url?.tailscale ?? false,
     peek: options.peekUrl,
     live: liveUrl,
   });

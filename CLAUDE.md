@@ -19,6 +19,16 @@ WorkTrellis owns worktree identity, scoped Compose project names, host-port
 publication, optional protocol-level resource isolation, generated
 environment, diagnostics, and foreground development-process supervision.
 
+URL providers are also a strict delegation boundary. WorkTrellis may choose a
+provider, derive a stable worktree-safe application name and port, invoke the
+provider's public interface, supervise the resulting foreground wrapper, and
+translate the provider's returned URL into the generated environment.
+Portless exclusively owns hostname routing, proxy startup and route lifecycle,
+route conflicts, certificate and trust setup, framework binding, and remote
+sharing such as Tailscale, Funnel, or tunnels. WorkTrellis must not inspect or
+reimplement Portless route registries, proxy internals, certificate state, or
+Tailscale Serve configuration.
+
 ## Non-negotiable invariants
 
 - Do not add a built-in Compose service catalog or runtime preset. Copyable
@@ -28,12 +38,22 @@ environment, diagnostics, and foreground development-process supervision.
   database, namespace, bucket, or similar resource, but must never choose or
   embed a Compose image.
 - Keep machine, repository, and workspace Compose scopes semantically
-  distinct. Machine-stack compatibility must include every input that changes
-  the rendered Compose project.
+  distinct. Machine stacks are shared by compatible definitions on one host,
+  repository stacks are shared only by worktrees with the same Git common
+  directory, and workspace stacks are unique to a concrete worktree path.
+  Machine-stack compatibility must include every input that changes the
+  rendered Compose project.
+- Delegate hostname and remote-network behavior through Portless's supported
+  CLI/API. Do not add Tailscale, Funnel, tunnel, certificate, hosts-file, or
+  reverse-proxy implementations to WorkTrellis. Provider-specific compatibility
+  cleanup must be narrow, documented, and removable.
 - Treat the project's base environment file, normally `.env`, as read-only;
   never write values back to it. Generated workspace environment belongs in
   gitignored `.worktrellis/env`, while machine coordination state belongs in
   the WorkTrellis home directory.
+- Resource adapters may consume project-owned credentials explicitly or resolve
+  them from `baseEnv`; they must not embed image-specific usernames, passwords,
+  access keys, or secret keys.
 - Normal diagnostics and errors must redact environment values. Commands whose
   explicit contract is to emit resolved environment data, such as
   `env --print`, are the exception and must remain intentional.
@@ -42,6 +62,10 @@ environment, diagnostics, and foreground development-process supervision.
 - Destructive operations such as database reset and volume removal must remain
   explicit. Never make them an implicit part of `up`, `info`, `doctor`, or
   `status`.
+- Supervised shutdown is cooperative first and forceful only after a bounded
+  grace period. Verify persisted process identity before signaling it, allow
+  wrappers to perform their own cleanup, and do not report success while a
+  recorded process or application port remains alive.
 - Keep the package project-agnostic. Application names, framework knowledge,
   migrations, dump policy, and arbitrary service vocabulary belong to the
   consuming project.
@@ -67,7 +91,8 @@ environment, diagnostics, and foreground development-process supervision.
   scoped stack coordination.
 - `src/resources/` — protocol-level resource adapters and provisioning.
 - `src/supervise/` — foreground process lifecycle and orphan cleanup.
-- `src/url/` — direct and Portless URL providers.
+- `src/url/` — direct URLs and thin delegation to Portless's public interface;
+  provider-owned routing and remote-sharing logic does not belong here.
 - `src/commands/` — CLI behavior; keep orchestration in the underlying modules
   when it is shared.
 - `test/` — unit, regression, and opt-in Compose integration coverage.
@@ -91,11 +116,20 @@ npm pack --dry-run
 ```
 
 Infrastructure changes should also run the opt-in Compose integration suite
-when a container engine is available:
+when Docker is available:
 
 ```bash
 WORKTRELLIS_COMPOSE_TEST=1 pnpm test test/compose.integration.test.ts
+WORKTRELLIS_COMPOSE_TEST=1 pnpm test test/worktree-scopes.smoke.test.ts
 ```
+
+The scope smoke test must use a real Git repository, a real linked worktree,
+and real Docker Compose projects. Changes to identity, naming, Compose scope,
+port publication, or generated scope environment require corresponding smoke
+coverage; mocks alone are insufficient. Missing Git, Docker, Compose, or a
+reachable daemon must produce an explicit skip reason. Once prerequisites pass,
+image, startup, isolation, reachability, and cleanup failures are test
+failures.
 
 ## Releases
 

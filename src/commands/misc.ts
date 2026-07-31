@@ -3,11 +3,26 @@ import path from "node:path";
 
 import { WorkTrellisError, EXIT, usageError } from "../core/errors";
 import { prepareWorkspace } from "../core/prepare";
-import { clearLiveRunState, readLiveRunState } from "../core/state";
+import {
+  clearLiveRunState,
+  readLiveRunState,
+  writeLiveRunState,
+} from "../core/state";
 import { ensureWorkspaceDatabase } from "../resources/postgres";
 import { describeResources } from "../resources";
-import type { PostgresDatabase } from "../types";
-import { clearRunRecord, reapOrphans, readRunRecord } from "../supervise/reaper";
+import type {
+  PostgresDatabase,
+  ResourceAdapters,
+  UrlContext,
+  WorkspaceIdentity,
+} from "../types";
+import type { StackStatus } from "../platform/stack";
+import {
+  clearRunRecord,
+  reapOrphans,
+  readRunRecord,
+  writeRunRecord,
+} from "../supervise/reaper";
 import { c, heading, info, success, table, warn } from "../util/log";
 import {
   IS_WINDOWS,
@@ -17,6 +32,14 @@ import {
   whichSync,
 } from "../util/proc";
 import { releasePortlessAlias } from "../url/portless";
+import { canConnect, waitForPortClose } from "../platform/ports";
+import {
+  clearShutdownRequest,
+  requestGracefulShutdown,
+  verifySupervisorForShutdown,
+  waitForProcessExit,
+} from "../supervise/shutdown";
+import { redactDiagnosticText } from "../core/env-resolve";
 
 export interface CommonOptions {
   cwd?: string;
@@ -44,28 +67,100 @@ export async function runDown(options: CommonOptions): Promise<number> {
   const { context } = prepared;
 
   const live = readLiveRunState(context.paths.state);
-  if (live && isProcessAlive(live.pid) && live.pid !== process.pid) {
-    info(`  stopping supervisor ${c.gray(`pid ${live.pid}`)}`);
-    killTree(live.pid, "SIGTERM");
+  const originalRecord = readRunRecord(context.paths.run);
+  const supervisorPid = live?.pid ?? originalRecord?.supervisorPid;
+  const hadRun = live !== null || originalRecord !== null;
+
+  if (
+    supervisorPid &&
+    isProcessAlive(supervisorPid) &&
+    supervisorPid !== process.pid
+  ) {
+    const verification = verifySupervisorForShutdown(originalRecord, {
+      pid: supervisorPid,
+      startedAt: live?.startedAt,
+      project: context.identity.project,
+      slug: context.identity.slug,
+      worktreeRoot: context.identity.root,
+    });
+
+    if (!verification.verified) {
+      warn(
+        `supervisor pid ${supervisorPid} left alone: ${verification.reason ?? "could not verify ownership"}`,
+      );
+      return EXIT.checkFailed;
+    }
+
+    info(`  requesting graceful shutdown ${c.gray(`pid ${supervisorPid}`)}`);
+    requestGracefulShutdown(context.paths.stop, originalRecord!);
+
+    const graceful = await waitForProcessExit(supervisorPid);
+    if (!graceful) {
+      warn(
+        `supervisor pid ${supervisorPid} did not stop gracefully; forcing shutdown`,
+      );
+      killTree(supervisorPid, "SIGKILL");
+      await waitForProcessExit(supervisorPid, { timeoutMs: 2_000 });
+    }
   }
 
-  const reaped = reapOrphans(context.paths.run);
-  for (const killed of reaped.killed) {
-    info(`  stopped ${killed.name} ${c.gray(`pid ${killed.pid}`)}`);
+  const reaped = await reapOrphans(context.paths.run, { clearRecord: false });
+  for (const stopped of reaped.stopped) {
+    info(
+      `  ${stopped.forced ? "force-stopped" : "stopped"} ${stopped.name} ${c.gray(`pid ${stopped.pid}`)}`,
+    );
   }
-  for (const orphan of reaped.unverified) {
+  for (const orphan of reaped.blocked) {
     warn(`pid ${orphan.pid} (${orphan.name}) left alone: ${orphan.reason}`);
   }
 
-  // Release the hostname so the proxy stops routing to a dead port.
+  // Remove static aliases recorded by older WorkTrellis releases.
   for (const alias of reaped.aliases) {
     await releasePortlessAlias(context.projectRoot, alias);
   }
 
+  const remainingSupervisor =
+    supervisorPid !== undefined && isProcessAlive(supervisorPid);
+  const remainingChildren = (originalRecord?.children ?? []).filter((child) =>
+    isProcessAlive(child.pid),
+  );
+  const appPortStillListening = live
+    ? !(await waitForPortClose(live.url.listenPort, {
+        host: live.url.listenHost || "127.0.0.1",
+        timeoutMs: 2_000,
+      }))
+    : false;
+  const incomplete =
+    remainingSupervisor ||
+    remainingChildren.length > 0 ||
+    reaped.blocked.length > 0 ||
+    appPortStillListening;
+
+  if (incomplete) {
+    if (originalRecord && !readRunRecord(context.paths.run)) {
+      writeRunRecord(context.paths.run, originalRecord);
+    }
+    if (live && !readLiveRunState(context.paths.state)) {
+      writeLiveRunState(context.paths.state, live);
+    }
+    if (remainingSupervisor) {
+      warn(`supervisor pid ${supervisorPid} is still running`);
+    }
+    for (const child of remainingChildren) {
+      warn(`managed process ${child.name} is still running as pid ${child.pid}`);
+    }
+    if (appPortStillListening && live) {
+      warn(`application port ${live.url.listenPort} is still accepting connections`);
+    }
+    warn("Shutdown is incomplete; run state was retained for diagnosis.");
+    return EXIT.checkFailed;
+  }
+
   clearRunRecord(context.paths.run);
   clearLiveRunState(context.paths.state);
+  clearShutdownRequest(context.paths.stop);
 
-  if (reaped.killed.length === 0 && !live) {
+  if (!hadRun) {
     info("Nothing was running for this worktree.");
   } else {
     success("Stopped.");
@@ -81,33 +176,64 @@ export async function runDown(options: CommonOptions): Promise<number> {
 
 export async function runStatus(options: CommonOptions): Promise<number> {
   const prepared = await peek(options);
-  const { context, infrastructure, url, envContext } = prepared;
+  const { context, infrastructure, url, envContext, env } = prepared;
   const live = readLiveRunState(context.paths.state);
-  const running = live !== null && isProcessAlive(live.pid);
+  const children = liveChildren(context.paths.run);
+  const supervisorAlive = live !== null && isProcessAlive(live.pid);
+  const portListening = live
+    ? await canConnect(
+        live.url.listenPort,
+        live.url.listenHost || "127.0.0.1",
+        250,
+      )
+    : false;
+  const runtimeState = classifyRuntimeState({
+    supervisorAlive,
+    liveChildCount: children.length,
+    portListening,
+  });
+  const running = runtimeState === "running";
+  const orphaned = runtimeState === "orphaned";
 
   if (options.json) {
     console.log(
       JSON.stringify(
-        {
+        buildStatusJson({
           workspace: context.identity,
           running,
+          orphaned,
+          state: runtimeState,
           url: url.url,
           compose: infrastructure.statuses,
+          resourceAdapters: context.config.resources,
           resources: envContext.resources,
-        },
+          diagnosticSources: [env.combined],
+        }),
         null,
         2,
       ),
     );
-    return EXIT.ok;
+    return orphaned ? EXIT.checkFailed : EXIT.ok;
   }
 
   heading(`${context.identity.project}  ${c.cyan(context.identity.slug)}`);
   info("");
 
   table([
-    ["state", running ? c.green(`running (pid ${live?.pid})`) : c.gray("stopped")],
-    ["url", running ? c.cyan(url.url.appUrl) : c.gray(`${url.url.appUrl} (when started)`)],
+    [
+      "state",
+      running
+        ? c.green(`running (pid ${live?.pid})`)
+        : orphaned
+          ? c.yellow("orphaned processes detected")
+          : c.gray("stopped"),
+    ],
+    [
+      "url",
+      running || orphaned
+        ? c.cyan(url.url.appUrl)
+        : c.gray(`${url.url.appUrl} (when started)`),
+    ],
     ...describeResources(
       context.config.resources,
       envContext.resources,
@@ -115,7 +241,11 @@ export async function runStatus(options: CommonOptions): Promise<number> {
       (resource) =>
         [
           resource.name,
-          resource.detail,
+          redactDiagnosticText(
+            resource.detail,
+            env.combined,
+            envContext.resources,
+          ),
         ] as [string, string],
     ),
   ]);
@@ -133,19 +263,104 @@ export async function runStatus(options: CommonOptions): Promise<number> {
     ]),
   );
 
-  if (running) {
-    const record = liveChildren(context.paths.run);
-    if (record.length > 0) {
+  if (running || orphaned) {
+    if (children.length > 0) {
       info("");
       heading("  Processes");
-      table(record.map((child) => [child.name, c.gray(`pid ${child.pid}`)]));
+      table(children.map((child) => [child.name, c.gray(`pid ${child.pid}`)]));
+    }
+    if (orphaned) {
+      info("");
+      warn("Run `worktrellis down` to clean up this workspace before restarting.");
     }
   } else {
     info("");
     info(`  Start it with ${c.cyan("pnpm dev")}.`);
   }
 
-  return EXIT.ok;
+  return orphaned ? EXIT.checkFailed : EXIT.ok;
+}
+
+export function buildStatusJson(input: {
+  workspace: WorkspaceIdentity;
+  running: boolean;
+  orphaned: boolean;
+  state: RuntimeState;
+  url: UrlContext;
+  compose: StackStatus[];
+  resourceAdapters?: ResourceAdapters;
+  resources: Record<string, unknown>;
+  diagnosticSources?: unknown[];
+}) {
+  const diagnosticSources = [
+    input.resources,
+    ...(input.diagnosticSources ?? []),
+  ];
+  const workspace = {
+    repoKey: input.workspace.repoKey,
+    isLinkedWorktree: input.workspace.isLinkedWorktree,
+    branch: input.workspace.branch,
+    head: input.workspace.head,
+    project: input.workspace.project,
+    slug: input.workspace.slug,
+    fingerprint: input.workspace.fingerprint,
+    ports: input.workspace.ports,
+  };
+  const url = {
+    mode: input.url.mode,
+    appUrl: input.url.appUrl,
+    rootDomain: input.url.rootDomain,
+    cookieDomain: input.url.cookieDomain,
+    tenantUrlTemplate: input.url.tenantUrlTemplate,
+    wildcardOrigins: input.url.wildcardOrigins,
+    listenHost: input.url.listenHost,
+    listenPort: input.url.listenPort,
+    ...(input.url.fallbackReason
+      ? {
+          fallbackReason: redactDiagnosticText(
+            input.url.fallbackReason,
+            ...diagnosticSources,
+          ),
+        }
+      : {}),
+  };
+  const resources = describeResources(
+    input.resourceAdapters,
+    input.resources,
+  ).map((resource) => ({
+    ...resource,
+    detail: redactDiagnosticText(resource.detail, ...diagnosticSources),
+  }));
+  const compose = input.compose.map((status) => ({
+    ...status,
+    ...(typeof status.detail === "string"
+      ? {
+          detail: redactDiagnosticText(status.detail, ...diagnosticSources),
+        }
+      : {}),
+  }));
+
+  return {
+    workspace,
+    running: input.running,
+    orphaned: input.orphaned,
+    state: input.state,
+    url,
+    compose,
+    resources,
+  };
+}
+
+export type RuntimeState = "running" | "orphaned" | "stopped";
+
+export function classifyRuntimeState(input: {
+  supervisorAlive: boolean;
+  liveChildCount: number;
+  portListening: boolean;
+}): RuntimeState {
+  if (input.supervisorAlive) return "running";
+  if (input.liveChildCount > 0 || input.portListening) return "orphaned";
+  return "stopped";
 }
 
 /** Read the recorded children without killing anything. */

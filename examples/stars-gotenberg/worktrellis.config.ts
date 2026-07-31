@@ -6,7 +6,7 @@ import {
 } from "worktrellis";
 
 export default defineConfig({
-  configVersion: 2,
+  configVersion: 3,
   project: "stars-local",
 
   compose: [
@@ -39,6 +39,8 @@ export default defineConfig({
     database: postgresDatabase({
       endpoint: { stack: "local", port: "database" },
       isolation: "database",
+      user: "postgres",
+      password: "postgres",
     }),
     cache: redisNamespace({
       endpoint: { stack: "local", port: "redis" },
@@ -47,6 +49,8 @@ export default defineConfig({
     storage: s3Bucket({
       endpoint: { stack: "local", port: "s3" },
       isolation: "bucket",
+      accessKey: "minioadmin",
+      secretKey: "minioadmin",
     }),
   },
 

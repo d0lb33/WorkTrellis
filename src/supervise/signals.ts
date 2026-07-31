@@ -8,9 +8,9 @@ import type { Supervisor } from "./supervisor";
  *
  * On Windows the console delivers the interrupt to the whole process group, so
  * children may already be dying before this handler runs — the supervisor has
- * to tolerate that rather than assume it is the one doing the killing. There is
- * also no portable way to deliver a graceful console-control event to another
- * process, so children there are effectively force-stopped.
+ * to tolerate that rather than assume it is the one doing the killing. For
+ * programmatic shutdown, the supervisor stops owned child trees first so
+ * foreground wrappers can observe application exit and perform cleanup.
  */
 export function installSignalHandlers(
   supervisor: Supervisor,

@@ -3,6 +3,56 @@
 All notable changes to WorkTrellis are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+## 0.3.0 - 2026-07-30
+
+### Breaking
+
+- Configuration version 3 requires projects to provide PostgreSQL and S3
+  credentials explicitly in their resource adapters. WorkTrellis no longer
+  embeds image-specific development credentials.
+- `worktrellis status --json` now omits private host paths and provider
+  environment, and reports safe resource descriptions instead of raw
+  credential-bearing resource objects.
+
+### Added
+
+- A thin `worktrellis up --tailscale` handoff that runs the app process through
+  Portless. Portless remains the sole owner of Tailscale configuration, URLs,
+  and cleanup.
+- Workspace-local sharing opt-in through `.worktrellis/local.json`.
+- A real Git worktree and Docker Compose smoke test that verifies machine,
+  repository, and workspace scope behavior, generated environments, and
+  cleanup. Missing external prerequisites produce an explicit skip reason.
+
+### Changed
+
+- All Portless-backed app processes now run through Portless, not only shared
+  ones. Portless owns proxy startup, local route conflict detection,
+  registration, framework adaptation, and cleanup; WorkTrellis only supplies
+  its exact worktree name and deterministic app port.
+
+### Fixed
+
+- `worktrellis down` now gives supervised wrappers time to perform their own
+  graceful cleanup before verified force-reaping, and reports failure instead
+  of success when a managed process or application port remains alive.
+- Orphan recovery now gives provider wrappers the same graceful cleanup window
+  even when their supervisor is already gone, preserving Portless route and
+  Tailscale cleanup.
+- Windows shutdown now stops a wrapper's owned application tree first so the
+  wrapper can observe application exit and finish provider cleanup before
+  WorkTrellis force-escalates.
+- Explicit Tailscale requests fail when Portless sharing is unavailable instead
+  of silently degrading to a loopback-only URL.
+- `worktrellis status` reports recorded children or listeners without a live
+  supervisor as `orphaned` and returns a failing exit code.
+- Diagnostic errors and structured status output redact secrets and
+  credential-bearing URLs.
+- Portless certificate state is no longer inspected or injected by
+  WorkTrellis; Portless owns its trust and certificate lifecycle completely.
+
 ## 0.2.3 - 2026-07-30
 
 ### Changed

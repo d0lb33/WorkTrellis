@@ -4,12 +4,13 @@ import { resolveDirectUrl } from "./direct";
 import {
   previewPortlessUrl,
   resolvePortlessUrl,
+  type PortlessAppRunner,
 } from "./portless";
 
 export interface ResolvedUrl {
   url: UrlContext;
-  /** Portless alias claimed by this run, if any. */
-  aliasName?: string;
+  /** Portless wrapper for every Portless-backed app process. */
+  portlessAppRunner?: PortlessAppRunner;
   /** Called on shutdown to release any registration the provider made. */
   release: () => Promise<void>;
 }
@@ -31,6 +32,8 @@ export async function resolveUrl(options: {
   preference?: UrlPreference;
   /** Workspace-local exact Portless alias below `.localhost`. */
   hostname?: string;
+  /** Ask Portless to share the app privately through Tailscale. */
+  tailscale?: boolean;
   /**
    * Report the URL without claiming it: no port is bound and no route is
    * registered. Read-only commands must use this — re-registering a hostname
@@ -69,20 +72,38 @@ export async function resolveUrl(options: {
   }
 
   if (preference === "direct") {
+    if (options.tailscale) {
+      throw new WorkTrellisError(
+        "Private tailnet sharing requires the Portless URL provider.",
+        {
+          remediation:
+            "Remove --direct, or disable Tailscale sharing for this run.",
+        },
+      );
+    }
     return { url: await resolveDirectUrl(options.identity), release: async () => {} };
   }
 
   const attempt = await resolvePortlessUrl(options.identity, {
     projectRoot: options.projectRoot,
     hostname: options.hostname,
+    tailscale: options.tailscale,
+    wildcard: options.config.url?.wildcard ?? false,
   });
 
   if ("failed" in attempt) {
-    if (preference === "portless") {
-      throw new WorkTrellisError(`Cannot use portless: ${attempt.reason}.`, {
-        remediation:
-          "Fix the problem above, or run with --direct to use a plain localhost port instead.",
-      });
+    if (preference === "portless" || options.tailscale) {
+      throw new WorkTrellisError(
+        options.tailscale
+          ? `Cannot enable private tailnet sharing: ${attempt.reason}.`
+          : `Cannot use portless: ${attempt.reason}.`,
+        {
+          remediation:
+            options.tailscale
+              ? "Install and configure Portless under Node 24 or newer, or disable Tailscale sharing for this run."
+              : "Fix the problem above, or run with --direct to use a plain localhost port instead.",
+        },
+      );
     }
 
     return {
@@ -95,7 +116,7 @@ export async function resolveUrl(options: {
 
   return {
     url: attempt.url,
-    aliasName: attempt.aliasName,
+    portlessAppRunner: attempt.appRunner,
     release: attempt.release,
   };
 }

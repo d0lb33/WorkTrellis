@@ -12,6 +12,8 @@ export interface WorkspaceLocalConfig {
      * `https://my-app.localhost`.
      */
     hostname?: string;
+    /** Opt this worktree into Portless's private Tailscale sharing. */
+    tailscale?: boolean;
   };
 }
 
@@ -95,16 +97,29 @@ export function loadWorkspaceLocalConfig(
   }
 
   const url = local.url as Record<string, unknown>;
-  assertKnownKeys(url, ["hostname"], `${path.basename(filePath)}: \`url\``);
+  assertKnownKeys(
+    url,
+    ["hostname", "tailscale"],
+    `${path.basename(filePath)}: \`url\``,
+  );
 
-  if (url.hostname === undefined) return { url: {} };
+  if (url.tailscale !== undefined && typeof url.tailscale !== "boolean") {
+    usageError(
+      `${path.basename(filePath)}: \`url.tailscale\` must be a boolean.`,
+    );
+  }
 
   return {
     url: {
-      hostname: validateHostname(
-        url.hostname,
-        `${path.basename(filePath)}: \`url.hostname\``,
-      ),
+      ...(url.hostname === undefined
+        ? {}
+        : {
+            hostname: validateHostname(
+              url.hostname,
+              `${path.basename(filePath)}: \`url.hostname\``,
+            ),
+          }),
+      ...(url.tailscale === undefined ? {} : { tailscale: url.tailscale }),
     },
   };
 }

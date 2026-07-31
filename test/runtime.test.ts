@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -6,12 +6,17 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { resolveInfoComposeProjects } from "../src/commands/info";
-import { resolvePackageManager } from "../src/commands/misc";
+import {
+  buildStatusJson,
+  classifyRuntimeState,
+  resolvePackageManager,
+} from "../src/commands/misc";
+import { includesAppPortProcess } from "../src/commands/up";
 import { runSelfCheck } from "../src/commands/self-check";
 import { parseArgs } from "../src/core/args";
 import { loadConfig } from "../src/core/config";
 import { buildContext } from "../src/core/context";
-import { resolveEnv } from "../src/core/env-resolve";
+import { redactDiagnosticText, resolveEnv } from "../src/core/env-resolve";
 import { loadWorkspaceLocalConfig } from "../src/core/local-config";
 import { renderStack } from "../src/platform/compose-render";
 import {
@@ -29,8 +34,22 @@ import {
   sanitizeMultiplexedOutput,
   Supervisor,
 } from "../src/supervise/supervisor";
+import {
+  readRunRecord,
+  reapOrphans,
+  writeRunRecord,
+  type RunRecord,
+} from "../src/supervise/reaper";
+import {
+  requestGracefulShutdown,
+  verifySupervisorForShutdown,
+  waitForProcessExit,
+} from "../src/supervise/shutdown";
+import { isProcessAlive, killTree } from "../src/util/proc";
 import { resolveUrl } from "../src/url/provider";
-import { claimPortlessAlias } from "../src/url/portless";
+import {
+  wrapCommandForPortless,
+} from "../src/url/portless";
 import type {
   ComposeContext,
   EnvContext,
@@ -61,6 +80,16 @@ function identity(overrides: Partial<WorkspaceIdentity> = {}): WorkspaceIdentity
   };
 }
 
+async function waitForFile(file: string, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!fs.existsSync(file) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  if (!fs.existsSync(file)) {
+    throw new Error(`timed out waiting for ${file}`);
+  }
+}
+
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
@@ -75,7 +104,7 @@ describe("WorkTrellis environment precedence", () => {
     vi.stubEnv("WORKTRELLIS_TEST_OWNED", "owned-from-process");
 
     const config: WorkTrellisConfig = {
-      configVersion: 2,
+      configVersion: 3,
       project: "test",
       compose: [],
       processes: [],
@@ -93,6 +122,102 @@ describe("WorkTrellis environment precedence", () => {
     expect(result.combined.WORKTRELLIS_TEST_OWNED).toBe("owned-from-process");
     expect(result.owned.WORKTRELLIS_TEST_OWNED).toBe("owned-from-config");
     expect(result.overriddenByProcess).toEqual(["WORKTRELLIS_TEST_OWNED"]);
+  });
+
+  it("redacts exact secret values and URL credentials from diagnostics", () => {
+    const secret = "worktrellis-sentinel-secret";
+    const value = redactDiagnosticText(
+      `token=${secret} database=postgresql://user:p%40ss@127.0.0.1/db callback=https://example.test/cb?access_token=query-secret`,
+      {
+        API_TOKEN: secret,
+        DATABASE_URL: "postgresql://user:p%40ss@127.0.0.1/db",
+      },
+    );
+
+    expect(value).not.toContain(secret);
+    expect(value).not.toContain("p%40ss");
+    expect(value).not.toContain("query-secret");
+    expect(value).toContain("postgresql://user:***@127.0.0.1/db");
+    expect(value).toContain("access_token=***");
+  });
+});
+
+describe("WorkTrellis diagnostic JSON", () => {
+  it("omits private paths, provider environment, and raw resources", () => {
+    const secret = "worktrellis-status-sentinel";
+    const resourceAdapters = {
+      database: defineResourceAdapter<{
+        database: string;
+        password: string;
+        url: string;
+      }>({
+        kind: "test-database",
+        isolation: "database",
+        endpoint: { stack: "local", port: "database" },
+        resolve: () => ({
+          database: "safe_database",
+          password: secret,
+          url: `postgresql://user:${secret}@127.0.0.1/safe_database`,
+        }),
+        describe: (resource) =>
+          `database ${resource.database} at ${resource.url} using ${resource.password}`,
+      }),
+    };
+
+    const result = buildStatusJson({
+      workspace: identity({ root: "/private/worktree/path" }),
+      running: true,
+      orphaned: false,
+      state: "running",
+      url: {
+        mode: "portless",
+        appUrl: "https://test.localhost",
+        rootDomain: "localhost",
+        cookieDomain: ".localhost",
+        tenantUrlTemplate: "https://<subdomain>.test.localhost",
+        wildcardOrigins: ["https://*.test.localhost"],
+        listenHost: "127.0.0.1",
+        listenPort: 3210,
+        fallbackReason: `proxy rejected token ${secret}`,
+        providerEnv: {
+          NODE_EXTRA_CA_CERTS: "/private/portless/ca.pem",
+        },
+      },
+      compose: [
+        {
+          name: "local",
+          scope: "machine",
+          stackId: "worktrellis-machine-local",
+          ports: { database: 5432 },
+          running: true,
+          reachable: false,
+          detail: `postgresql://user:${secret}@127.0.0.1/db`,
+        },
+      ],
+      resourceAdapters,
+      resources: {
+        database: {
+          database: "safe_database",
+          password: secret,
+          url: `postgresql://user:${secret}@127.0.0.1/safe_database`,
+        },
+      },
+    });
+    const serialized = JSON.stringify(result);
+
+    expect(serialized).not.toContain(secret);
+    expect(serialized).not.toContain("/private/worktree/path");
+    expect(serialized).not.toContain("NODE_EXTRA_CA_CERTS");
+    expect(serialized).not.toContain("/private/portless/ca.pem");
+    expect(result.url.fallbackReason).toBe("proxy rejected token ***");
+    expect(result.resources).toEqual([
+      {
+        name: "database",
+        kind: "test-database",
+        detail:
+          "database safe_database at postgresql://user:***@127.0.0.1/safe_database using ***",
+      },
+    ]);
   });
 });
 
@@ -154,13 +279,268 @@ describe("WorkTrellis process supervision", () => {
     expect(fs.existsSync(dependentMarker)).toBe(false);
   });
 
+  it(
+    "lets an orphaned wrapper perform provider cleanup before force escalation",
+    async () => {
+      const directory = temporaryDirectory("worktrellis-orphan-cleanup");
+      const wrapperFile = path.join(directory, "wrapper.cjs");
+      const readyMarker = path.join(directory, "ready");
+      const cleanupMarker = path.join(directory, "cleanup-complete");
+      const runFile = path.join(directory, "run.json");
+
+      fs.writeFileSync(
+        wrapperFile,
+        `const { spawn } = require("node:child_process");
+const fs = require("node:fs");
+const child = spawn(process.execPath, [
+  "-e",
+  "setInterval(() => {}, 1000)"
+], { stdio: "ignore" });
+fs.writeFileSync(${JSON.stringify(readyMarker)}, "ready");
+let stopping = false;
+const finish = () => {
+  if (stopping) return;
+  stopping = true;
+  fs.writeFileSync(${JSON.stringify(cleanupMarker)}, "done");
+  process.exit(0);
+};
+child.once("exit", finish);
+process.on("SIGTERM", () => {
+  try { process.kill(child.pid, "SIGTERM"); } catch {}
+  setTimeout(finish, 200);
+});
+setInterval(() => {}, 1000);
+`,
+      );
+
+      const wrapper = spawn(process.execPath, [wrapperFile], {
+        detached: process.platform !== "win32",
+        stdio: "ignore",
+      });
+
+      try {
+        await waitForFile(readyMarker);
+        writeRunRecord(runFile, {
+          supervisorPid: process.pid,
+          supervisorStartedAt: Date.now(),
+          project: "test",
+          slug: "test",
+          worktreeRoot: directory,
+          aliases: [],
+          children: [
+            {
+              name: "app",
+              pid: wrapper.pid!,
+              startedAtMs: Date.now(),
+              cmdMustContain: directory,
+            },
+          ],
+        });
+
+        const result = await reapOrphans(runFile, { graceMs: 1_000 });
+        expect(result.blocked).toEqual([]);
+        expect(result.stopped).toEqual([
+          { name: "app", pid: wrapper.pid, forced: false },
+        ]);
+        expect(fs.readFileSync(cleanupMarker, "utf8")).toBe("done");
+        expect(fs.existsSync(runFile)).toBe(false);
+      } finally {
+        if (wrapper.pid && isProcessAlive(wrapper.pid)) {
+          killTree(wrapper.pid, "SIGKILL");
+        }
+      }
+    },
+  );
+
+  it(
+    "lets a supervised wrapper finish graceful descendant cleanup",
+    async () => {
+      const directory = temporaryDirectory("worktrellis-graceful-shutdown");
+      const wrapperFile = path.join(directory, "wrapper.cjs");
+      const childPidFile = path.join(directory, "child.pid");
+      const cleanupMarker = path.join(directory, "cleanup-complete");
+      const runFile = path.join(directory, "run.json");
+      const stopFile = path.join(directory, "stop.json");
+
+      fs.writeFileSync(
+        wrapperFile,
+        `const { spawn } = require("node:child_process");
+const fs = require("node:fs");
+const child = spawn(process.execPath, [
+  "-e",
+  "process.on('SIGTERM', () => process.exit(0)); setInterval(() => {}, 1000)"
+], { detached: process.platform !== "win32", stdio: "ignore" });
+fs.writeFileSync(${JSON.stringify(childPidFile)}, String(child.pid));
+let stopping = false;
+const finish = () => {
+  if (stopping) return;
+  stopping = true;
+  fs.writeFileSync(${JSON.stringify(cleanupMarker)}, "done");
+  process.exit(0);
+};
+child.once("exit", finish);
+process.on("SIGTERM", () => {
+  try { process.kill(-child.pid, "SIGTERM"); } catch {}
+  try { process.kill(child.pid, "SIGTERM"); } catch {}
+  setTimeout(finish, 200);
+});
+setInterval(() => {}, 1000);
+`,
+      );
+
+      const supervisor = new Supervisor({
+        projectRoot: directory,
+        env: {},
+        envContext: {} as EnvContext,
+        runFile,
+        stopFile,
+        logDirectory: path.join(directory, "logs"),
+        identity: { project: "test", slug: "test", root: directory },
+        aliases: [],
+      });
+      supervisor.add(
+        {
+          name: "wrapper",
+          command: { bin: process.execPath, args: [wrapperFile] },
+        },
+        0,
+      );
+
+      const completion = supervisor.run();
+      let childPid: number | undefined;
+      try {
+        await waitForFile(childPidFile);
+        childPid = Number(fs.readFileSync(childPidFile, "utf8"));
+        const record = readRunRecord(runFile);
+        expect(record).not.toBeNull();
+
+        requestGracefulShutdown(stopFile, {
+          supervisorPid: record!.supervisorPid,
+          supervisorStartedAt: record!.supervisorStartedAt + 1,
+        });
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        expect(fs.existsSync(cleanupMarker)).toBe(false);
+
+        requestGracefulShutdown(stopFile, record!);
+        await expect(completion).resolves.toBe(0);
+        expect(fs.readFileSync(cleanupMarker, "utf8")).toBe("done");
+        await expect(
+          waitForProcessExit(childPid, { timeoutMs: 2_000 }),
+        ).resolves.toBe(true);
+      } finally {
+        await supervisor.shutdown();
+        if (childPid && isProcessAlive(childPid)) {
+          killTree(childPid, "SIGKILL");
+        }
+      }
+    },
+    10_000,
+  );
+
+  it("verifies the recorded supervisor incarnation before shutdown", async () => {
+    const directory = temporaryDirectory("worktrellis-supervisor-verification");
+    const child = spawn(
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000)", "worktrellis-supervisor"],
+      {
+        detached: process.platform !== "win32",
+        stdio: "ignore",
+      },
+    );
+    const startedAt = Date.now();
+
+    try {
+      expect(child.pid).toBeTypeOf("number");
+      const record: RunRecord = {
+        supervisorPid: child.pid!,
+        supervisorStartedAt: startedAt,
+        project: "test",
+        slug: "test-workspace",
+        worktreeRoot: directory,
+        aliases: [],
+        children: [],
+      };
+
+      expect(
+        verifySupervisorForShutdown(record, {
+          pid: child.pid!,
+          startedAt: new Date(startedAt).toISOString(),
+          project: "test",
+          slug: "test-workspace",
+          worktreeRoot: directory,
+        }),
+      ).toEqual({ verified: true });
+      expect(
+        verifySupervisorForShutdown(record, {
+          pid: child.pid!,
+          startedAt: new Date(startedAt).toISOString(),
+          project: "test",
+          slug: "another-workspace",
+          worktreeRoot: directory,
+        }),
+      ).toEqual({
+        verified: false,
+        reason: "the run record belongs to another workspace",
+      });
+    } finally {
+      if (child.pid) killTree(child.pid, "SIGKILL");
+      await waitForProcessExit(child.pid!, { timeoutMs: 2_000 });
+    }
+  });
+
+  it("force-kills descendants that created their own process groups", async () => {
+    const directory = temporaryDirectory("worktrellis-force-tree");
+    const wrapperFile = path.join(directory, "wrapper.cjs");
+    const childPidFile = path.join(directory, "child.pid");
+    fs.writeFileSync(
+      wrapperFile,
+      `const { spawn } = require("node:child_process");
+const fs = require("node:fs");
+const child = spawn(process.execPath, [
+  "-e",
+  "setInterval(() => {}, 1000)"
+], { detached: process.platform !== "win32", stdio: "ignore" });
+fs.writeFileSync(${JSON.stringify(childPidFile)}, String(child.pid));
+setInterval(() => {}, 1000);
+`,
+    );
+    const wrapper = spawn(process.execPath, [wrapperFile], {
+      detached: process.platform !== "win32",
+      stdio: "ignore",
+    });
+    let childPid: number | undefined;
+
+    try {
+      await waitForFile(childPidFile);
+      childPid = Number(fs.readFileSync(childPidFile, "utf8"));
+      expect(isProcessAlive(wrapper.pid!)).toBe(true);
+      expect(isProcessAlive(childPid)).toBe(true);
+
+      killTree(wrapper.pid!, "SIGKILL");
+
+      await expect(
+        waitForProcessExit(wrapper.pid!, { timeoutMs: 2_000 }),
+      ).resolves.toBe(true);
+      await expect(
+        waitForProcessExit(childPid, { timeoutMs: 2_000 }),
+      ).resolves.toBe(true);
+    } finally {
+      if (wrapper.pid && isProcessAlive(wrapper.pid)) {
+        killTree(wrapper.pid, "SIGKILL");
+      }
+      if (childPid && isProcessAlive(childPid)) {
+        killTree(childPid, "SIGKILL");
+      }
+    }
+  });
+
   it("rejects dependency cycles while loading configuration", async () => {
     const directory = temporaryDirectory("worktrellis-config");
     const configPath = path.join(directory, "worktrellis.config.mjs");
     fs.writeFileSync(
       configPath,
       `export default {
-        configVersion: 2,
+        configVersion: 3,
         project: "test",
         compose: [],
         env: () => ({}),
@@ -190,7 +570,7 @@ describe("WorkTrellis process supervision", () => {
     );
 
     await expect(loadConfig({ cwd: directory })).rejects.toThrow(
-      /requires `configVersion: 2`/,
+      /requires `configVersion: 3`/,
     );
   });
 });
@@ -385,7 +765,7 @@ describe("WorkTrellis scoped Compose plans", () => {
     fs.writeFileSync(
       path.join(directory, "worktrellis.config.mjs"),
       `export default {
-        configVersion: 2,
+        configVersion: 3,
         project: "test",
         compose: [{ name: "infrastructure", scope: "machine", files: [] }],
         env: () => ({}),
@@ -455,6 +835,8 @@ describe("WorkTrellis resource isolation", () => {
         database: postgresDatabase({
           endpoint: { stack: "standard", port: "postgres" },
           isolation: "database",
+          user: "postgres",
+          password: "postgres",
         }),
         cache: redisNamespace({
           endpoint: { stack: "standard", port: "redis" },
@@ -463,6 +845,8 @@ describe("WorkTrellis resource isolation", () => {
         storage: s3Bucket({
           endpoint: { stack: "standard", port: "minio" },
           isolation: "bucket",
+          accessKey: "minioadmin",
+          secretKey: "minioadmin",
         }),
       },
     });
@@ -476,6 +860,50 @@ describe("WorkTrellis resource isolation", () => {
     expect(resources.storage.bucket).toBe(
       "test-feature-test-deadbeef",
     );
+  });
+
+  it("rejects missing project-owned resource credentials", () => {
+    const compose: ComposeContext = {
+      stacks: {
+        standard: {
+          name: "standard",
+          scope: "machine",
+          projectName: "worktrellis-machine-standard",
+          ports: { postgres: 5432, minio: 9000 },
+        },
+      },
+      url: () => "",
+    };
+
+    expect(() =>
+      resolveResources({
+        identity: identity(),
+        compose,
+        adapters: {
+          database: postgresDatabase({
+            endpoint: { stack: "standard", port: "postgres" },
+            isolation: "database",
+            user: "postgres",
+            password: () => undefined,
+          }),
+        },
+      }),
+    ).toThrow(/postgresDatabase\(\)\.password must resolve/);
+
+    expect(() =>
+      resolveResources({
+        identity: identity(),
+        compose,
+        adapters: {
+          storage: s3Bucket({
+            endpoint: { stack: "standard", port: "minio" },
+            isolation: "bucket",
+            accessKey: "minioadmin",
+            secretKey: () => "",
+          }),
+        },
+      }),
+    ).toThrow(/s3Bucket\(\)\.secretKey must resolve/);
   });
 
   it("keeps custom adapter names and resolved values intact", () => {
@@ -563,7 +991,7 @@ describe("WorkTrellis package scripts", () => {
 describe("WorkTrellis URL inspection", () => {
   it("previews a worktree URL without registering a route", async () => {
     const config: WorkTrellisConfig = {
-      configVersion: 2,
+      configVersion: 3,
       project: "test",
       compose: [],
       processes: [],
@@ -586,7 +1014,7 @@ describe("WorkTrellis URL inspection", () => {
 
   it("uses a workspace-local hostname override without changing identity", async () => {
     const config: WorkTrellisConfig = {
-      configVersion: 2,
+      configVersion: 3,
       project: "test",
       compose: [],
       processes: [],
@@ -610,18 +1038,133 @@ describe("WorkTrellis URL inspection", () => {
     expect(identity().slug).toBe("feature-test-deadbeef");
   });
 
-  it("leases hostname overrides so two running worktrees cannot share one", async () => {
-    const home = temporaryDirectory("worktrellis-hostname-lease");
-    vi.stubEnv("WORKTRELLIS_HOME", home);
+  it("fails an explicit Tailscale request instead of falling back to localhost", async () => {
+    const config: WorkTrellisConfig = {
+      configVersion: 3,
+      project: "test",
+      compose: [],
+      processes: [],
+      env: () => ({}),
+      url: { provider: "auto" },
+    };
 
-    const first = await claimPortlessAlias("stars-local", 10);
-    await expect(claimPortlessAlias("stars-local", 10)).rejects.toThrow(
-      /another WorkTrellis process is already using it/,
-    );
+    await expect(
+      resolveUrl({
+        identity: identity(),
+        projectRoot: temporaryDirectory("worktrellis-missing-portless"),
+        config,
+        tailscale: true,
+      }),
+    ).rejects.toThrow(/Cannot enable private tailnet sharing/);
+  });
+});
 
-    first.release();
-    const next = await claimPortlessAlias("stars-local", 10);
-    next.release();
+describe("WorkTrellis runtime status", () => {
+  it("distinguishes live supervisors, orphaned children, and stopped runs", () => {
+    expect(
+      classifyRuntimeState({
+        supervisorAlive: true,
+        liveChildCount: 0,
+        portListening: false,
+      }),
+    ).toBe("running");
+    expect(
+      classifyRuntimeState({
+        supervisorAlive: false,
+        liveChildCount: 1,
+        portListening: false,
+      }),
+    ).toBe("orphaned");
+    expect(
+      classifyRuntimeState({
+        supervisorAlive: false,
+        liveChildCount: 0,
+        portListening: true,
+      }),
+    ).toBe("orphaned");
+    expect(
+      classifyRuntimeState({
+        supervisorAlive: false,
+        liveChildCount: 0,
+        portListening: false,
+      }),
+    ).toBe("stopped");
+  });
+});
+
+describe("WorkTrellis Portless process delegation", () => {
+  it("requires the app-port process for a private-sharing launch", () => {
+    expect(
+      includesAppPortProcess([
+        {
+          name: "worker",
+          command: { bin: "pnpm", args: ["worker"] },
+        },
+      ]),
+    ).toBe(false);
+    expect(
+      includesAppPortProcess([
+        {
+          name: "app",
+          command: { bin: "pnpm", args: ["dev"] },
+          bindsAppPort: true,
+        },
+      ]),
+    ).toBe(true);
+  });
+
+  it("delegates local routing and the fixed port to Portless", () => {
+    expect(
+      wrapCommandForPortless(
+        { node: ["node_modules/next/dist/bin/next", "dev"] },
+        {
+          binary: "/project/node_modules/portless/dist/cli.js",
+          aliasName: "feature-test-deadbeef.test",
+          listenPort: 3210,
+          tailscale: false,
+        },
+        "/project",
+      ),
+    ).toEqual({
+      node: [
+        "/project/node_modules/portless/dist/cli.js",
+        "--name",
+        "feature-test-deadbeef.test",
+        "--app-port",
+        "3210",
+        "--",
+        process.execPath,
+        "/project/node_modules/next/dist/bin/next",
+        "dev",
+      ],
+    });
+  });
+
+  it("adds private sharing without changing local route ownership", () => {
+    expect(
+      wrapCommandForPortless(
+        { bin: "pnpm", args: ["dev"] },
+        {
+          binary: "/project/node_modules/portless/dist/cli.js",
+          aliasName: "feature-test-deadbeef.test",
+          listenPort: 3210,
+          tailscale: true,
+        },
+        "/project",
+      ),
+    ).toEqual({
+      node: [
+        "/project/node_modules/portless/dist/cli.js",
+        "--name",
+        "feature-test-deadbeef.test",
+        "--tailscale",
+        "--app-port",
+        "3210",
+        "--",
+        "pnpm",
+        "dev",
+      ],
+    });
   });
 });
 
@@ -639,13 +1182,28 @@ describe("WorkTrellis workspace-local configuration", () => {
     });
   });
 
+  it("loads a workspace-local Tailscale preference", () => {
+    const directory = temporaryDirectory("worktrellis-local-tailscale");
+    const file = path.join(directory, "local.json");
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        url: { hostname: "stars-local", tailscale: true },
+      }),
+    );
+
+    expect(loadWorkspaceLocalConfig(file)).toEqual({
+      url: { hostname: "stars-local", tailscale: true },
+    });
+  });
+
   it("wires the local override into the command context", async () => {
     const directory = temporaryDirectory("worktrellis-local-context");
     execFileSync("git", ["init", "--quiet"], { cwd: directory });
     fs.writeFileSync(
       path.join(directory, "worktrellis.config.mjs"),
       `export default {
-        configVersion: 2,
+        configVersion: 3,
         project: "test",
         compose: [],
         env: () => ({}),

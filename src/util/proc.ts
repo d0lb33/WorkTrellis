@@ -39,6 +39,8 @@ export interface RunOptions {
   capture?: boolean;
   /** Capture and discard — used for probe commands. */
   quiet?: boolean;
+  /** Allow a delegated tool to perform its own interactive setup. */
+  stdin?: "ignore" | "inherit";
   timeoutMs?: number;
 }
 
@@ -65,8 +67,8 @@ export function run(
       cwd: options.cwd,
       env: options.env ?? process.env,
       stdio: capture
-        ? ["ignore", "pipe", "pipe"]
-        : ["ignore", "inherit", "inherit"],
+        ? [options.stdin ?? "ignore", "pipe", "pipe"]
+        : [options.stdin ?? "ignore", "inherit", "inherit"],
       windowsHide: true,
     });
 
@@ -134,6 +136,49 @@ export function killTree(
     return;
   }
 
+  // A well-behaved wrapper handles SIGTERM and shuts down its own children.
+  // Force cleanup has no such cooperation, so snapshot verified descendants
+  // before killing the parent; nested tools may create their own process groups
+  // that a single negative-PID signal cannot reach.
+  if (signal === "SIGKILL") {
+    for (const descendant of descendantPids(pid)) {
+      signalProcessOrGroup(descendant, signal);
+    }
+  }
+
+  signalProcessOrGroup(pid, signal);
+}
+
+/**
+ * Give a foreground wrapper a chance to observe its application exiting and
+ * run provider-owned cleanup.
+ *
+ * POSIX wrappers can receive SIGTERM directly. Windows cannot deliver an
+ * equivalent catchable signal to another console process, so terminate only
+ * the wrapper's direct child trees. A wrapper such as Portless then observes
+ * its child exit and cleans up routes/tunnels before exiting itself. If no
+ * children can be found, leave the root alone for the caller's bounded grace
+ * period rather than interrupt cleanup that may already be in progress.
+ */
+export function requestCooperativeTreeShutdown(pid: number): void {
+  if (!Number.isInteger(pid) || pid <= 0) return;
+
+  if (!IS_WINDOWS) {
+    killTree(pid, "SIGTERM");
+    return;
+  }
+
+  for (const childPid of directWindowsChildPids(pid)) {
+    // Windows has no catchable cross-process SIGTERM. Force the owned app
+    // subtree while deliberately preserving its supervising wrapper.
+    killTree(childPid, "SIGKILL");
+  }
+}
+
+function signalProcessOrGroup(
+  pid: number,
+  signal: NodeJS.Signals,
+): void {
   try {
     process.kill(-pid, signal);
   } catch {
@@ -143,6 +188,62 @@ export function killTree(
       // Already gone.
     }
   }
+}
+
+function directWindowsChildPids(rootPid: number): number[] {
+  const result = spawnSync(
+    "powershell",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      `Get-CimInstance Win32_Process -Filter "ParentProcessId = ${rootPid}" | ForEach-Object { $_.ProcessId }`,
+    ],
+    {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 15_000,
+    },
+  );
+  if (result.status !== 0 || !result.stdout) return [];
+
+  return result.stdout
+    .split(/\r?\n/)
+    .map((value) => Number.parseInt(value.trim(), 10))
+    .filter((pid) => Number.isInteger(pid) && pid > 0);
+}
+
+function descendantPids(rootPid: number): number[] {
+  const result = spawnSync("ps", ["-axo", "pid=,ppid="], {
+    encoding: "utf8",
+    timeout: 15_000,
+  });
+  if (result.status !== 0 || !result.stdout) return [];
+
+  const children = new Map<number, number[]>();
+  for (const line of result.stdout.split(/\r?\n/)) {
+    const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
+    if (!match) continue;
+    const pid = Number.parseInt(match[1]!, 10);
+    const parentPid = Number.parseInt(match[2]!, 10);
+    if (!Number.isInteger(pid) || !Number.isInteger(parentPid)) continue;
+    const siblings = children.get(parentPid) ?? [];
+    siblings.push(pid);
+    children.set(parentPid, siblings);
+  }
+
+  const descendants: number[] = [];
+  const visited = new Set<number>([rootPid]);
+  const visit = (parentPid: number): void => {
+    for (const childPid of children.get(parentPid) ?? []) {
+      if (visited.has(childPid)) continue;
+      visited.add(childPid);
+      visit(childPid);
+      descendants.push(childPid);
+    }
+  };
+  visit(rootPid);
+  return descendants;
 }
 
 export interface ProcessDescription {

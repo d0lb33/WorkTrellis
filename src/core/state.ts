@@ -58,6 +58,7 @@ export function workspacePaths(worktreeRoot: string, workspaceKey?: string) {
     workspace: path.join(base, "workspace.json"),
     state: path.join(base, "state.json"),
     run: path.join(base, "run.json"),
+    stop: path.join(base, "stop.json"),
     logs,
     log: (name: string) => path.join(logs, `${name}.log`),
   };

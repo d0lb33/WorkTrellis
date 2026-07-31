@@ -7,6 +7,7 @@ import { prepareWorkspace } from "../core/prepare";
 import { readMachineConfig } from "../core/state";
 import { engineContext, engineVersion } from "../platform/engine";
 import { c, heading, info } from "../util/log";
+import { redactDiagnosticText } from "../core/env-resolve";
 
 export interface DoctorOptions {
   cwd?: string;
@@ -160,6 +161,29 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
     const result = await check(prepared.envContext);
     checks.push({
       ...result,
+      label: redactDiagnosticText(
+        result.label,
+        env.combined,
+        prepared.envContext.resources,
+      ),
+      ...(result.detail
+        ? {
+            detail: redactDiagnosticText(
+              result.detail,
+              env.combined,
+              prepared.envContext.resources,
+            ),
+          }
+        : {}),
+      ...(result.fix
+        ? {
+            fix: redactDiagnosticText(
+              result.fix,
+              env.combined,
+              prepared.envContext.resources,
+            ),
+          }
+        : {}),
       severity: result.ok ? "ok" : (result.severity ?? "warn"),
     });
   }

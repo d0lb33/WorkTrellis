@@ -9,6 +9,7 @@ import {
   type WorkTrellisConfig,
 } from "../types";
 import { WorkTrellisError, usageError } from "./errors";
+import { redactDiagnosticText } from "./env-resolve";
 import { assertProjectName } from "./naming";
 
 const CONFIG_FILENAMES = [
@@ -73,7 +74,10 @@ export async function loadConfig(options: {
   } catch (caught) {
     throw new WorkTrellisError(`Failed to load ${path.basename(configPath)}.`, {
       cause: caught,
-      remediation: (caught as Error)?.message,
+      remediation: redactDiagnosticText(
+        (caught as Error)?.message ?? String(caught),
+        process.env,
+      ),
     });
   }
 
@@ -100,7 +104,7 @@ function validate(
   if (config.configVersion !== WORKTRELLIS_CONFIG_VERSION) {
     usageError(
       `${where}: this release requires \`configVersion: ${WORKTRELLIS_CONFIG_VERSION}\`; received ${JSON.stringify(config.configVersion)}.`,
-      "Configuration v1 is intentionally not supported. Migrate the configuration before upgrading WorkTrellis.",
+      "Migrate the configuration before upgrading WorkTrellis. Version 3 requires project-owned PostgreSQL and S3 credentials.",
     );
   }
 
@@ -185,7 +189,7 @@ function validateCompose(stacks: ComposeStackSpec[], where: string): void {
       if (!/^[a-z][a-zA-Z0-9]*$/.test(portName)) {
         usageError(
           `${where}: port name ${JSON.stringify(portName)} in stack "${stack.name}" is invalid.`,
-          "Use a lower camel-case identifier such as `gotenberg` or `mailpitUi`.",
+          "Use a lower camel-case identifier such as `api` or `adminUi`.",
         );
       }
       if (portNames.has(portName)) {

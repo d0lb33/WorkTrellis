@@ -29,6 +29,9 @@ jobs:
       - run: pnpm test test/compose.integration.test.ts
         env:
           WORKTRELLIS_COMPOSE_TEST: "1"
+      - run: pnpm test test/worktree-scopes.smoke.test.ts
+        env:
+          WORKTRELLIS_COMPOSE_TEST: "1"
       - run: pnpm build
       - name: Verify release tag matches package version
         run: node -e "const p=require('./package.json'); if (process.env.GITHUB_REF_NAME !== 'v' + p.version) throw new Error('Release tag must be v' + p.version)"

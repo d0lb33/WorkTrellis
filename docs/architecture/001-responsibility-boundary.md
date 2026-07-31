@@ -2,14 +2,15 @@
 
 ## Status
 
-Accepted for configuration version 2.
+Accepted for configuration version 3.
 
 ## Decision
 
 WorkTrellis coordinates local Git worktrees. It owns:
 
 - canonical worktree and repository identity;
-- stable slugs, scoped Compose project names, ports, and hostnames;
+- stable slugs, scoped Compose project names, deterministic app ports, and
+  worktree-safe names supplied to URL providers;
 - per-worktree PostgreSQL databases, Redis namespaces, and object buckets;
 - generated `.worktrellis/env` snapshots;
 - environment-aware `exec` and package-script execution;
@@ -26,7 +27,7 @@ WorkTrellis delegates:
 | Schema and application migrations | Project hooks and tools |
 | Dump download, validation, sanitization, restoration | Project scripts |
 | Secrets | Developer or secret manager |
-| Hostname proxying | Portless |
+| Hostname routing, proxy lifecycle, certificates, and remote sharing | Portless |
 | Production process management | Deployment platform |
 
 Compose is the infrastructure data plane. WorkTrellis contains no built-in

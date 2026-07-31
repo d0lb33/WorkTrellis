@@ -1,7 +1,13 @@
 import fs from "node:fs";
 
 import { readJsonFile, writeJsonFile } from "../util/fs";
-import { describeProcesses, isProcessAlive, killTree } from "../util/proc";
+import {
+  describeProcesses,
+  isProcessAlive,
+  killTree,
+  requestCooperativeTreeShutdown,
+} from "../util/proc";
+import { waitForProcessExit } from "./shutdown";
 
 /**
  * Recovering from WorkTrellis not shutting down cleanly — a force-kill, a
@@ -44,9 +50,9 @@ export function clearRunRecord(runFile: string): void {
 }
 
 export interface ReapResult {
-  killed: Array<{ name: string; pid: number }>;
-  /** Alive, but could not be confirmed as ours — reported, never killed. */
-  unverified: Array<{ name: string; pid: number; reason: string }>;
+  stopped: Array<{ name: string; pid: number; forced: boolean }>;
+  /** Still alive because ownership could not be verified or signals failed. */
+  blocked: Array<{ name: string; pid: number; reason: string }>;
   aliases: string[];
 }
 
@@ -61,26 +67,32 @@ export interface ReapResult {
  * If any check cannot be performed, the record is reported and left alone —
  * a missed orphan is a nuisance, but killing an innocent process is not.
  */
-export function reapOrphans(runFile: string): ReapResult {
+export async function reapOrphans(
+  runFile: string,
+  options: { clearRecord?: boolean; graceMs?: number } = {},
+): Promise<ReapResult> {
+  const clearRecord = options.clearRecord ?? true;
+  const graceMs = options.graceMs ?? 3_000;
   const record = readRunRecord(runFile);
-  const result: ReapResult = { killed: [], unverified: [], aliases: [] };
+  const result: ReapResult = { stopped: [], blocked: [], aliases: [] };
   if (!record) return result;
 
   result.aliases = record.aliases ?? [];
 
   const alive = (record.children ?? []).filter((child) => isProcessAlive(child.pid));
   if (alive.length === 0) {
-    clearRunRecord(runFile);
+    if (clearRecord) clearRunRecord(runFile);
     return result;
   }
 
   const described = describeProcesses(alive.map((child) => child.pid));
 
+  const verified: RunChild[] = [];
   for (const child of alive) {
     const info = described.get(child.pid);
 
     if (!info) {
-      result.unverified.push({
+      result.blocked.push({
         name: child.name,
         pid: child.pid,
         reason: "could not read the process command line",
@@ -92,7 +104,7 @@ export function reapOrphans(runFile: string): ReapResult {
     const expected = child.cmdMustContain.replace(/\\/g, "/").toLowerCase();
 
     if (!normalized.includes(expected)) {
-      result.unverified.push({
+      result.blocked.push({
         name: child.name,
         pid: child.pid,
         reason: "the pid now belongs to an unrelated process",
@@ -101,7 +113,7 @@ export function reapOrphans(runFile: string): ReapResult {
     }
 
     if (info.startedAt !== null && info.startedAt > child.startedAtMs + 60_000) {
-      result.unverified.push({
+      result.blocked.push({
         name: child.name,
         pid: child.pid,
         reason: "the process started well after the recorded run",
@@ -109,10 +121,47 @@ export function reapOrphans(runFile: string): ReapResult {
       continue;
     }
 
-    killTree(child.pid, "SIGKILL");
-    result.killed.push({ name: child.name, pid: child.pid });
+    verified.push(child);
   }
 
-  clearRunRecord(runFile);
+  // Wrappers such as Portless own route and tunnel cleanup. Give every
+  // positively identified orphan the same cooperative shutdown opportunity as
+  // a live supervisor before escalating.
+  for (const child of verified) {
+    requestCooperativeTreeShutdown(child.pid);
+  }
+
+  const graceful = await Promise.all(
+    verified.map((child) =>
+      waitForProcessExit(child.pid, {
+        timeoutMs: graceMs,
+        pollMs: 50,
+      }),
+    ),
+  );
+
+  for (const [index, child] of verified.entries()) {
+    if (graceful[index]) {
+      result.stopped.push({ name: child.name, pid: child.pid, forced: false });
+      continue;
+    }
+
+    killTree(child.pid, "SIGKILL");
+    const forced = await waitForProcessExit(child.pid, {
+      timeoutMs: 2_000,
+      pollMs: 50,
+    });
+    if (forced) {
+      result.stopped.push({ name: child.name, pid: child.pid, forced: true });
+    } else {
+      result.blocked.push({
+        name: child.name,
+        pid: child.pid,
+        reason: "did not exit after graceful and forced shutdown",
+      });
+    }
+  }
+
+  if (clearRecord && result.blocked.length === 0) clearRunRecord(runFile);
   return result;
 }

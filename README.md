@@ -1,59 +1,203 @@
+<div align="center">
+
 # WorkTrellis
 
-**One host, many worktrees.**
+### One command. Every worktree. No collisions.
 
-WorkTrellis coordinates local development across Git worktrees and clones. It
-uses Docker Compose for containers while giving each worktree its own database,
-Redis namespace, object-storage bucket, URL, process ports, and resolved
-environment.
+Run several branches of the same application at once, with isolated databases,
+cache keys, object-storage buckets, URLs, ports, and process trees—without
+duplicating infrastructure that can safely be shared.
 
-It does not write `.env`. Secrets stay in the project's own environment file;
-derived local values are written to the ignored `.worktrellis/env` snapshot.
+[![CI](https://github.com/d0lb33/WorkTrellis/actions/workflows/ci.yml/badge.svg)](https://github.com/d0lb33/WorkTrellis/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/worktrellis)](https://www.npmjs.com/package/worktrellis)
+[![Node.js](https://img.shields.io/node/v/worktrellis)](https://www.npmjs.com/package/worktrellis)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-## Why
+</div>
 
-A second worktree should not accidentally:
+---
 
-- connect to the first worktree's database;
-- consume its jobs or reuse its cache keys;
-- overwrite its uploaded files;
-- share authentication cookies; or
-- fail because a development port is occupied.
+Git worktrees make parallel branches cheap. Most local-development environments
+still assume there is only one checkout.
 
-WorkTrellis derives a stable identity from the repository and worktree path,
-coordinates explicitly scoped Compose stacks, and provisions isolated logical
-resources inside them.
+Open a second worktree and suddenly both branches want port 3000, both point at
+the same database, both consume the same queue, and both write to the same
+bucket. The first app may keep running while the second quietly mutates its
+data.
 
-## Requirements
+WorkTrellis turns a repository's local environment into something worktree-aware:
+
+```text
+                    one compatible Compose stack
+                   PostgreSQL · Redis · MinIO · Mail
+                                  │
+                 ┌────────────────┼────────────────┐
+                 │                │                │
+            main worktree    feature worktree   bugfix worktree
+            own database     own database       own database
+            own Redis slice  own Redis slice    own Redis slice
+            own bucket       own bucket         own bucket
+            own URL + port   own URL + port     own URL + port
+```
+
+You keep using Docker Compose, your existing application commands, and your
+project's `.env`. WorkTrellis coordinates the pieces that must differ between
+worktrees and shares the pieces that do not.
+
+## The pitch
+
+After a project is configured, every checkout starts the same way:
+
+```bash
+pnpm dev
+```
+
+WorkTrellis then:
+
+- identifies the current repository and worktree;
+- starts or reuses the correctly scoped Compose stacks;
+- publishes deterministic, loopback-only host ports;
+- provisions an isolated logical database, Redis namespace, and bucket;
+- generates the worktree's URLs and derived environment;
+- starts the app and worker as one supervised process group; and
+- cleans up verified leftovers from interrupted runs.
+
+The result is boring in the best way: developers and coding agents can open
+another worktree without negotiating ports or wondering which branch owns the
+data they are looking at.
+
+## Where WorkTrellis shines
+
+### 1. Developing two features at the same time
+
+Keep `main` running for comparison while a feature branch changes the schema,
+background worker, or authentication flow. Each branch gets its own data and
+application URL, so testing one does not disturb the other.
+
+### 2. Agentic and parallel coding workflows
+
+Give multiple coding agents separate Git worktrees. They can all run the
+project's normal development command without guessing ports, sharing test data,
+or killing one another's servers.
+
+### 3. Applications with a shared local infrastructure stack
+
+PostgreSQL, Redis, S3-compatible storage, and mail capture are inexpensive to
+share at the container level but dangerous to share at the data level.
+WorkTrellis reuses compatible containers while isolating databases, Redis
+prefixes/logical databases, and buckets.
+
+### 4. Dependencies that cannot be logically partitioned
+
+Some services do not have a useful namespace or database concept. Give their
+Compose stack `scope: "workspace"` and WorkTrellis will run one Compose project
+per worktree with distinct host ports.
+
+### 5. Teams that want one reliable onboarding command
+
+Project configuration documents the required services, ports, resource
+isolation, generated variables, processes, and health checks. A new developer
+can clone, create `.env`, run `worktrellis doctor`, and use the same `pnpm dev`
+as everyone else.
+
+### 6. Testing from another device
+
+Portless-backed apps can be shared temporarily through Tailscale:
+
+```bash
+pnpm exec worktrellis up --tailscale
+```
+
+WorkTrellis supplies the worktree-safe name and app port. Portless owns the
+local route, certificates, Tailscale Serve configuration, remote URL, and
+cleanup.
+
+## What it owns—and what it leaves alone
+
+| WorkTrellis coordinates | Your project or existing tools own |
+| --- | --- |
+| Worktree and repository identity | Compose services, images, networks, and volumes |
+| Machine, repository, and workspace scopes | Application and worker commands |
+| Deterministic host ports | Secrets and `.env` |
+| Logical resource isolation | Schema migrations, seeds, and data restore policy |
+| Generated worktree environment | Portless routing, certificates, and remote sharing |
+| Foreground process supervision and orphan cleanup | Production deployment and orchestration |
+
+That boundary is intentional. WorkTrellis is a local coordination layer, not a
+new infrastructure platform.
+
+## Quick start
+
+### Requirements
 
 - Node.js 22 or newer
 - Git
 - Docker or Podman with Compose support
-- A JavaScript package manager for `worktrellis run`
+- pnpm, npm, Yarn, or Bun for project scripts
 
-## Install
+Named HTTPS and Tailscale sharing are optional Portless features and currently
+require Node.js 24 or newer.
+
+Install and pin WorkTrellis as a development dependency:
 
 ```bash
 pnpm add --save-dev --save-exact worktrellis
 ```
 
-Create `worktrellis.config.ts` in the repository root:
+Add the generated directory to `.gitignore`:
+
+```gitignore
+/.worktrellis/
+```
+
+### 1. Keep services in Compose
+
+WorkTrellis does not invent or own service definitions:
+
+```yaml
+# compose.worktrellis.yml
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis-data:/data
+
+volumes:
+  postgres-data:
+  redis-data:
+```
+
+Do not publish host ports in this file. WorkTrellis generates the final
+loopback-only port override.
+
+### 2. Describe the worktree contract
+
+Create `worktrellis.config.ts`:
 
 ```ts
 import {
   defineConfig,
   postgresDatabase,
   redisNamespace,
-  s3Bucket,
 } from "worktrellis";
 
 export default defineConfig({
-  configVersion: 2,
+  configVersion: 3,
   project: "acme",
+  baseEnvFile: ".env",
 
   compose: [
     {
-      name: "local",
+      name: "infrastructure",
       scope: "machine",
       files: ["compose.worktrellis.yml"],
       ports: {
@@ -67,45 +211,29 @@ export default defineConfig({
           containerPort: 6379,
           probe: { kind: "redis" },
         },
-        s3: {
-          service: "minio",
-          containerPort: 9000,
-          probe: { kind: "http", path: "/minio/health/live" },
-        },
-        mail: {
-          service: "mailpit",
-          containerPort: 1025,
-          probe: { kind: "smtp" },
-        },
       },
     },
   ],
 
   resources: {
     database: postgresDatabase({
-      endpoint: { stack: "local", port: "database" },
+      endpoint: { stack: "infrastructure", port: "database" },
       isolation: "database",
+      user: "postgres",
+      password: "postgres",
     }),
     cache: redisNamespace({
-      endpoint: { stack: "local", port: "redis" },
+      endpoint: { stack: "infrastructure", port: "redis" },
       isolation: "namespace",
-    }),
-    storage: s3Bucket({
-      endpoint: { stack: "local", port: "s3" },
-      isolation: "bucket",
     }),
   },
 
   url: { provider: "auto", basePort: 3000 },
 
-  env: ({ workspace, compose, resources, url }) => ({
+  env: ({ workspace, resources, url }) => ({
     DATABASE_URL: resources.database.url,
     REDIS_URL: resources.cache.url,
     REDIS_KEY_PREFIX: `${resources.cache.prefix}:`,
-    S3_ENDPOINT: resources.storage.endpoint,
-    S3_BUCKET: resources.storage.bucket,
-    SMTP_HOST: "127.0.0.1",
-    SMTP_PORT: String(compose.stacks.local!.ports.mail),
     PORT: String(url.listenPort),
     APP_URL: url.appUrl,
     COOKIE_PREFIX: `acme-${workspace.slug}`,
@@ -123,190 +251,234 @@ export default defineConfig({
 });
 ```
 
-Commit the referenced Compose file. It is ordinary project code:
+Credentials belong to the project. For secrets, resolve them from the
+read-only base environment instead of embedding them:
 
-```yaml
-# compose.worktrellis.yml
-services:
-  postgres:
-    image: postgis/postgis:16-3.5
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-  redis:
-    image: redis:7-alpine
-    volumes:
-      - redis-data:/data
-  minio:
-    image: minio/minio:latest
-    command: ["server", "/data"]
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-    volumes:
-      - minio-data:/data
-  mailpit:
-    image: axllent/mailpit:latest
-
-volumes:
-  postgres-data:
-  redis-data:
-  minio-data:
+```ts
+password: ({ baseEnv }) => baseEnv.POSTGRES_PASSWORD,
 ```
 
-Add the generated directory to `.gitignore`:
+### 3. Make it the normal development command
 
-```gitignore
-/.worktrellis/
+```json
+{
+  "scripts": {
+    "dev": "worktrellis up",
+    "dev:direct": "worktrellis up --direct",
+    "services:status": "worktrellis services status",
+    "worktrellis:doctor": "worktrellis doctor"
+  }
+}
 ```
 
-Then:
+Then verify and start:
 
 ```bash
-pnpm exec worktrellis doctor
-pnpm exec worktrellis up
+pnpm worktrellis:doctor
+pnpm dev
 ```
+
+## The isolation model
+
+Compose stacks and logical resources solve different problems.
+
+### Compose scopes
+
+| Scope | Use it when | Result |
+| --- | --- | --- |
+| `machine` | Compatible infrastructure can be shared across local projects | One matching Compose project on the host |
+| `repository` | All worktrees of one repository should share a dependency | One Compose project per Git repository |
+| `workspace` | The service cannot safely isolate data internally | One Compose project per worktree |
+
+Machine stacks are shared only when their Compose files, named ports, and
+declared interpolation inputs are compatible. WorkTrellis warns before
+starting a second variant and never prints secret values while explaining the
+difference.
+
+### Resource isolation
+
+Built-in adapters provide logical isolation inside compatible endpoints:
+
+- `postgresDatabase()` creates a worktree-specific PostgreSQL database;
+- `redisNamespace()` creates a logical database and collision-resistant prefix;
+- `s3Bucket()` creates a worktree-specific S3-compatible bucket.
+
+Adapters know protocols, not container images. PostgreSQL can come from
+`postgres`, PostGIS, or another compatible image chosen by the project.
 
 ## Compose is the extension language
 
-Every service belongs in project-owned Compose files:
+Adding an arbitrary local dependency should not require a WorkTrellis plugin.
+Put it in Compose, publish a named port through the config, and expose its URL
+to the application:
 
 ```yaml
-# compose.dev.yml
+# compose.documents.yml
 services:
-  gotenberg:
+  documents:
     image: gotenberg/gotenberg:8
 ```
-
-Declare how WorkTrellis should scope that stack and publish its ports:
 
 ```ts
 compose: [
   {
     name: "documents",
     scope: "workspace",
-    files: ["compose.dev.yml"],
+    files: ["compose.documents.yml"],
     ports: {
-      gotenberg: { service: "gotenberg", containerPort: 3000 },
+      api: { service: "documents", containerPort: 3000 },
     },
   },
 ],
 
 env: ({ compose }) => ({
-  GOTENBERG_URL: compose.url("documents", "gotenberg"),
+  DOCUMENT_SERVICE_URL: compose.url("documents", "api"),
 }),
 ```
 
-WorkTrellis does not need a Gotenberg-, PostGIS-, PgAdmin-, or Mailpit-specific
-adapter. They are either protocol-compatible infrastructure or named
-endpoints. Resource adapters exist only where logical worktree isolation is
-required.
+Use a resource adapter only when WorkTrellis needs to create a logical,
+worktree-specific slice inside a shared protocol endpoint. A future MSSQL
+database adapter makes sense; a Gotenberg service adapter does not.
 
-The same rule handles databases WorkTrellis does not yet know. An MSSQL service
-can use `scope: "workspace"` for one container per worktree without any
-adapter. A future or community `mssqlDatabase()` adapter could instead isolate
-databases inside a shared machine-scoped endpoint.
-
-## Daily use
+## Daily commands
 
 ```bash
+# Start services, provision resources, and supervise app processes
 pnpm exec worktrellis up
+
+# Stop this worktree's foreground processes; shared Compose stacks stay up
 pnpm exec worktrellis down
+
+# Inspect this worktree without mutating infrastructure
 pnpm exec worktrellis status
+pnpm exec worktrellis info
+pnpm exec worktrellis doctor
+
+# Understand or consume the resolved environment
 pnpm exec worktrellis env --explain
 pnpm exec worktrellis exec -- <command>
-pnpm exec worktrellis run <script>
+pnpm exec worktrellis run <package-script>
+
+# Operate the project-owned Compose stacks explicitly
 pnpm exec worktrellis services status
+pnpm exec worktrellis services up
+pnpm exec worktrellis services down
+
+# See every known worktree
 pnpm exec worktrellis list
 ```
 
-Use `worktrellis run` for project operations that need the current worktree's
-environment. For example:
+Project-owned scripts can consume the current worktree environment:
 
 ```bash
-pnpm exec worktrellis run db:restore -- ./backups/latest.dump
+pnpm exec worktrellis run db:restore -- ./backups/sanitized.dump
 ```
 
-The project script owns dump download, validation, sanitization, restoration,
-and post-restore migration. WorkTrellis supplies the isolated target.
+The script still owns download, validation, sanitization, restoration, and
+migration policy. WorkTrellis supplies the correct isolated target.
 
-## Infrastructure scopes
+## URLs and optional phone access
 
-- `machine`: one compatible Compose project shared across repositories and
-  worktrees on the host;
-- `repository`: one Compose project shared by every worktree of a repository;
-- `workspace`: one Compose project for this worktree.
+Install Portless alongside WorkTrellis when you want named local HTTPS:
 
-WorkTrellis generates Compose project names and loopback-only host-port
-overrides. Compose owns images, containers, networks, volumes, and health
-checks. Shared-stack Compose interpolation inputs can be declared in
-`compose[].env`, including callbacks that read the project's read-only
-`baseEnv`.
+```bash
+pnpm add --save-dev --save-exact portless
+```
 
-Machine-scoped stacks are shared only when their Compose files, named ports,
-and resolved `compose[].env` values are compatible. Before starting a second
-variant, WorkTrellis reports the already-running stack, the additional stack it
-would create, and which environment keys should be compared. Secret values are
-never printed.
+With Portless available, the default `auto` provider gives each worktree a
+named local HTTPS URL:
 
-## Environment precedence
+```text
+https://feature-checkout-a1b2c3d4.acme.localhost
+```
 
-From lowest to highest priority:
+When Portless is unavailable, `auto` falls back to a deterministic direct URL.
+Use `--direct` to request plain `http://localhost:<port>` explicitly. Use
+`--tailscale` only when you intentionally want private tailnet access:
 
-1. the configured secrets file (`.env` by default);
-2. values returned by `env(context)`;
-3. variables already exported in the process environment.
+```bash
+pnpm exec worktrellis up --tailscale
+```
 
-The generated `.worktrellis/env` contains only derived values. It is useful for
-tools not launched by WorkTrellis, but it must remain ignored and must not be
-edited by hand.
-
-## State and compatibility
-
-Per-worktree state lives in `<worktree>/.worktrellis`. Machine-wide stack
-definitions, port overrides, locks, logs, and the workspace index live in
-`~/.worktrellis`. Set `WORKTRELLIS_HOME` to override that location.
-
-WorkTrellis owns the generated files in `.worktrellis`, except for
-`.worktrellis/local.json`, which is an optional developer-owned settings file.
-For example, a main checkout can opt into a short Portless URL:
+A developer can keep local choices in ignored `.worktrellis/local.json`:
 
 ```json
 {
   "url": {
-    "hostname": "my-project"
+    "hostname": "acme-local",
+    "tailscale": false
   }
 }
 ```
 
-This produces `https://my-project.localhost`. The override changes only the URL;
-the fingerprinted workspace identity and isolated resources remain unchanged.
-Hostname ownership is leased machine-wide, so a second running worktree cannot
-silently repoint the same alias.
+Portless owns proxy startup, route conflicts, certificates, local routing,
+Tailscale Serve, remote ports, remote URLs, and route cleanup. WorkTrellis only
+delegates the worktree name and deterministic app port.
 
-The current configuration contract is `configVersion: 2`. Version 1 is rejected
-and old `.devstack` state is not imported. See the
-[v2 migration guide](docs/migration-to-v2.md).
+## Environment and secrets
 
-## Responsibility boundary
+WorkTrellis never writes `.env`.
 
-WorkTrellis is for worktree coordination and isolation. It is not a general
-workflow engine, secret manager, database migration framework, dump-management
-tool, production supervisor, or replacement for Compose and package scripts.
-The complete boundary is recorded in
-[ADR 001](docs/architecture/001-responsibility-boundary.md).
+Environment precedence, from lowest to highest, is:
+
+1. the project's read-only secrets file;
+2. values returned by `env(context)`;
+3. variables already exported in the process environment.
+
+Derived values are written to ignored `.worktrellis/env` for project tools that
+WorkTrellis does not launch directly. Do not edit or commit that snapshot.
+Normal status and diagnostic output redacts credentials.
+
+## Five places you should not use WorkTrellis
+
+1. **Production orchestration.** Use your deployment platform, Kubernetes,
+   systemd, or another production process manager. WorkTrellis supervises local
+   foreground development processes.
+
+2. **Replacing Docker Compose.** Keep images, services, networks, volumes,
+   health checks, and build contexts in project-owned Compose files.
+   WorkTrellis scopes and coordinates Compose; it is not a service catalog.
+
+3. **Managing secrets.** Use `.env` for local secrets and an appropriate secret
+   manager for shared or deployed environments. WorkTrellis reads project
+   secrets but never owns, generates, or writes them.
+
+4. **Owning migrations, backups, or production data.** Keep schema migrations,
+   seed policy, dump acquisition, sanitization, validation, and restore logic in
+   project tools. WorkTrellis can run those tools against the isolated target.
+
+5. **Becoming your workflow or build system.** Use your package manager,
+   Turborepo, Nx, CI platform, or domain workflow engine for general task
+   graphs. WorkTrellis is narrowly responsible for coordinating and isolating
+   local Git worktrees.
+
+The boundary test is simple:
+
+> Does this coordinate or isolate Git worktrees?
+
+If not, it probably belongs somewhere else.
+
+## State and compatibility
+
+Per-worktree generated state lives in `<worktree>/.worktrellis`. Machine-wide
+stack definitions, port overrides, locks, logs, and the workspace index live in
+`~/.worktrellis`. Set `WORKTRELLIS_HOME` to override that location.
+
+The current configuration contract is `configVersion: 3`. Unsupported versions
+fail before infrastructure is changed. See the
+[configuration reference](docs/configuration.md) and
+[v3 migration guide](docs/migration-to-v3.md).
 
 ## Documentation
 
 - [CLI reference](docs/cli.md)
 - [Configuration reference](docs/configuration.md)
 - [Team adoption guide](docs/team-setup.md)
-- [Migration to configuration v2](docs/migration-to-v2.md)
-- [Publishing guide](docs/publishing.md)
+- [Responsibility boundary](docs/architecture/001-responsibility-boundary.md)
+- [Migration to configuration v3](docs/migration-to-v3.md)
 - [Acceptance examples](examples)
+- [Changelog](CHANGELOG.md)
 
 ## License
 
-MIT
+[MIT](LICENSE)

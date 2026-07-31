@@ -27,21 +27,34 @@ writes `.worktrellis/env`, and supervises configured processes.
 --no-services       Do not start stopped Compose stacks
 --direct            Force a localhost port instead of portless
 --portless          Require a portless hostname
+--tailscale         Ask Portless to share the app on your tailnet
 --migrate           Run the configured migration hook
 --seed[=<name>]     Run the default or named seed hook
 --no-prefix         Do not prefix child output with process names
 ```
 
+An explicit `--tailscale` request fails if Portless sharing cannot be started;
+it never silently falls back to a loopback-only URL.
+
 ### `worktrellis down`
 
-Stops processes recorded for this worktree and releases its Portless aliases.
-Compose stacks remain running.
+Stops processes recorded for this worktree. Portless removes its local and
+private routes as the wrapped app exits. WorkTrellis first requests a
+cooperative supervisor shutdown, preserving the wrapper while stopping its
+owned application tree on Windows, then force-reaps only verified leftovers
+after a timeout. It returns a failing exit code instead of reporting success
+when a managed process or the application port remains alive. Compose stacks
+remain running.
 
 ### `worktrellis status`
 
 Reports the worktree URL, supervised-process state, Compose health, and
-resolved resource names.
-Supports `--json`.
+resolved resource names. If the supervisor is gone while a recorded child or
+application listener remains, status reports `orphaned` and exits with a
+failing status instead of describing the workspace as stopped.
+Supports `--json`. Structured status omits the worktree root and provider
+environment, reports resources as safe descriptions, and redacts credentials
+from diagnostic details.
 
 ### `worktrellis doctor`
 

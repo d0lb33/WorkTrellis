@@ -11,7 +11,12 @@ import { Supervisor } from "../supervise/supervisor";
 import { clearRunRecord } from "../supervise/reaper";
 import { c, heading, info, step, table, warn } from "../util/log";
 import type { UrlPreference } from "../url/provider";
-import type { PostgresDatabase } from "../types";
+import {
+  wrapCommandForPortless,
+  type PortlessAppRunner,
+} from "../url/portless";
+import type { PostgresDatabase, ProcessSpec } from "../types";
+import { redactDiagnosticText } from "../core/env-resolve";
 
 export interface UpOptions {
   cwd?: string;
@@ -23,6 +28,32 @@ export interface UpOptions {
   seed?: string | boolean;
   prefix?: boolean;
   raw?: string;
+  tailscale?: boolean;
+}
+
+function wrapAppWithPortless(
+  spec: ProcessSpec,
+  runner: PortlessAppRunner,
+): ProcessSpec {
+  if (!spec.bindsAppPort) return spec;
+
+  const original = spec.command;
+  return {
+    ...spec,
+    command: (context) => {
+      const command =
+        typeof original === "function" ? original(context) : original;
+      return wrapCommandForPortless(
+        command,
+        runner,
+        context.workspace.root,
+      );
+    },
+  };
+}
+
+export function includesAppPortProcess(processes: ProcessSpec[]): boolean {
+  return processes.some((process) => process.bindsAppPort);
 }
 
 export async function runUp(options: UpOptions): Promise<number> {
@@ -32,6 +63,7 @@ export async function runUp(options: UpOptions): Promise<number> {
     configPath: options.configPath,
     startServices: options.services !== false,
     urlPreference: options.urlPreference,
+    tailscale: options.tailscale,
   });
 
   const { context, infrastructure, url, env, envContext } = prepared;
@@ -46,17 +78,22 @@ export async function runUp(options: UpOptions): Promise<number> {
   );
   info("");
 
-  const reaped = reapOrphans(context.paths.run);
-  if (reaped.killed.length > 0) {
+  const reaped = await reapOrphans(context.paths.run);
+  if (reaped.stopped.length > 0) {
     step(
       "reaping",
-      `stopped ${reaped.killed.length} leftover process(es) from a previous run`,
+      `stopped ${reaped.stopped.length} leftover process(es) from a previous run`,
     );
   }
-  for (const orphan of reaped.unverified) {
+  for (const orphan of reaped.blocked) {
     warn(
       `pid ${orphan.pid} (${orphan.name}) from a previous run is still alive but ${orphan.reason}; leaving it alone.`,
     );
+  }
+  if (reaped.blocked.length > 0) {
+    warn("Cannot start while verified cleanup of the previous run is incomplete.");
+    await url.release();
+    return EXIT.checkFailed;
   }
 
   // Services
@@ -101,7 +138,13 @@ export async function runUp(options: UpOptions): Promise<number> {
       skip: context.config.db ? [context.config.db.resource] : undefined,
     });
   } catch (caught) {
-    warn(`resource provisioning failed: ${(caught as Error).message}`);
+    warn(
+      `resource provisioning failed: ${redactDiagnosticText(
+        (caught as Error).message,
+        env.combined,
+        envContext.resources,
+      )}`,
+    );
   }
 
   if (context.config.db) {
@@ -128,7 +171,13 @@ export async function runUp(options: UpOptions): Promise<number> {
     } catch (caught) {
       // A database problem should not be silently fatal to `up`; report it and
       // let the developer decide, since the app may still be worth starting.
-      warn(`database provisioning failed: ${(caught as Error).message}`);
+      warn(
+        `database provisioning failed: ${redactDiagnosticText(
+          (caught as Error).message,
+          env.combined,
+          envContext.resources,
+        )}`,
+      );
     }
   }
 
@@ -137,14 +186,41 @@ export async function runUp(options: UpOptions): Promise<number> {
     "url",
     `${url.url.mode}  ${c.cyan(url.url.appUrl)} ${c.gray(`-> 127.0.0.1:${url.url.listenPort}`)}`,
   );
+  if (url.portlessAppRunner?.tailscale) {
+    step("sharing", "Portless will print the private tailnet URL");
+  }
   if (url.url.fallbackReason) {
-    info(c.gray(`            using a plain localhost port because ${url.url.fallbackReason}`));
+    info(
+      c.gray(
+        `            using a plain localhost port because ${redactDiagnosticText(
+          url.url.fallbackReason,
+          env.combined,
+          envContext.resources,
+        )}`,
+      ),
+    );
   }
 
   // Processes
-  const selected = options.only
+  const selectedBase = options.only
     ? context.config.processes.filter((spec) => options.only!.includes(spec.name))
     : context.config.processes;
+  const portlessRunner = url.portlessAppRunner;
+
+  if (
+    portlessRunner?.tailscale &&
+    !includesAppPortProcess(selectedBase)
+  ) {
+    warn(
+      "Private tailnet sharing requires the selected app process that sets `bindsAppPort`.",
+    );
+    await url.release();
+    return EXIT.checkFailed;
+  }
+
+  const selected = portlessRunner
+    ? selectedBase.map((spec) => wrapAppWithPortless(spec, portlessRunner))
+    : selectedBase;
 
   if (selected.length === 0) {
     info("");
@@ -161,7 +237,13 @@ export async function runUp(options: UpOptions): Promise<number> {
     (resource) =>
       [
         resource.name,
-        c.gray(resource.detail),
+        c.gray(
+          redactDiagnosticText(
+            resource.detail,
+            env.combined,
+            envContext.resources,
+          ),
+        ),
       ] as [string, string],
   );
   table([
@@ -176,24 +258,28 @@ export async function runUp(options: UpOptions): Promise<number> {
     env: env.combined,
     envContext: prepared.envContext,
     runFile: context.paths.run,
+    stopFile: context.paths.stop,
     logDirectory: context.paths.logs,
     identity: {
       project: identity.project,
       slug: identity.slug,
       root: identity.root,
     },
-    aliases: url.aliasName ? [url.aliasName] : [],
+    // Portless process-backed routes clean themselves up with the app.
+    // `aliases` remains in the run-record schema only for legacy cleanup.
+    aliases: [],
     prefix: options.prefix,
     raw: options.raw,
   });
 
   selected.forEach((spec, index) => supervisor.add(spec, index));
 
-  // Record what we claimed, so read-only commands report the live URL instead
-  // of deriving (and re-registering) one of their own.
+  // Record what this run resolved so read-only commands report the live URL
+  // without contacting or mutating the URL provider.
+  supervisor.prepareForRun();
   writeLiveRunState(context.paths.state, {
     pid: process.pid,
-    startedAt: new Date().toISOString(),
+    startedAt: new Date(supervisor.supervisorStartedAt).toISOString(),
     url: url.url,
   });
 

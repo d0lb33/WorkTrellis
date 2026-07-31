@@ -6,8 +6,17 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 
 import { ensureInfrastructure, type EnsureResult } from "../src/platform/stack";
 import type { WorkspaceIdentity } from "../src/types";
+import { realDockerReadiness } from "./real-environment";
 
-const enabled = process.env.WORKTRELLIS_COMPOSE_TEST === "1";
+const readiness = realDockerReadiness();
+if (
+  process.env.WORKTRELLIS_COMPOSE_TEST === "1" &&
+  !readiness.ready
+) {
+  process.stderr.write(
+    `[worktrellis compose test] skipped: ${readiness.reason}\n`,
+  );
+}
 const temporaryRoot = fs.mkdtempSync(
   path.join(os.tmpdir(), "worktrellis-compose-integration-"),
 );
@@ -25,79 +34,37 @@ const identity: WorkspaceIdentity = {
   ports: { app: 3300 },
 };
 
-describe.skipIf(!enabled)("real Compose integration", () => {
-  it("publishes and probes a project-owned workspace service", async () => {
-    vi.stubEnv(
-      "WORKTRELLIS_HOME",
-      path.join(temporaryRoot, ".worktrellis-home"),
-    );
-    fs.writeFileSync(
-      path.join(temporaryRoot, "compose.worktrellis.yml"),
-      [
-        "services:",
-        "  web:",
-        "    image: nginx:alpine",
-        "    restart: unless-stopped",
-        "",
-      ].join("\n"),
-    );
+describe.skipIf(!readiness.ready)(
+  `real Compose integration${readiness.reason ? ` (skipped: ${readiness.reason})` : ""}`,
+  () => {
+    it("publishes and probes a project-owned workspace service", async () => {
+      vi.stubEnv(
+        "WORKTRELLIS_HOME",
+        path.join(temporaryRoot, ".worktrellis-home"),
+      );
+      fs.writeFileSync(
+        path.join(temporaryRoot, "compose.worktrellis.yml"),
+        [
+          "services:",
+          "  web:",
+          "    image: nginx:alpine",
+          "    restart: unless-stopped",
+          "",
+        ].join("\n"),
+      );
 
-    infrastructure = await ensureInfrastructure(
-      [
-        {
-          name: "web",
-          scope: "workspace",
-          files: ["compose.worktrellis.yml"],
-          ports: {
-            http: {
-              service: "web",
-              containerPort: 80,
-              probe: { kind: "http", path: "/" },
-            },
-          },
-        },
-      ],
-      {
-        identity,
-        projectRoot: temporaryRoot,
-        startIfStopped: true,
-      },
-    );
-
-    expect(infrastructure.statuses).toEqual([
-      expect.objectContaining({
-        name: "web",
-        scope: "workspace",
-        running: true,
-        reachable: true,
-      }),
-    ]);
-    expect(infrastructure.compose.url("web", "http")).toMatch(
-      /^http:\/\/127\.0\.0\.1:\d+$/,
-    );
-  }, 180_000);
-
-  it("rejects host ports published by the project Compose file", async () => {
-    fs.writeFileSync(
-      path.join(temporaryRoot, "compose.invalid.yml"),
-      [
-        "services:",
-        "  web:",
-        "    image: nginx:alpine",
-        '    ports: ["127.0.0.1:18080:80"]',
-        "",
-      ].join("\n"),
-    );
-
-    await expect(
-      ensureInfrastructure(
+      infrastructure = await ensureInfrastructure(
         [
           {
-            name: "invalid",
+            name: "web",
             scope: "workspace",
-            files: ["compose.invalid.yml"],
+            files: ["compose.worktrellis.yml"],
             ports: {
-              http: { service: "web", containerPort: 80 },
+              http: {
+                service: "web",
+                containerPort: 80,
+                probe: { kind: "http", path: "/" },
+              },
             },
           },
         ],
@@ -106,10 +73,55 @@ describe.skipIf(!enabled)("real Compose integration", () => {
           projectRoot: temporaryRoot,
           startIfStopped: true,
         },
-      ),
-    ).rejects.toThrow(/publish host ports/);
-  }, 60_000);
-});
+      );
+
+      expect(infrastructure.statuses).toEqual([
+        expect.objectContaining({
+          name: "web",
+          scope: "workspace",
+          running: true,
+          reachable: true,
+        }),
+      ]);
+      expect(infrastructure.compose.url("web", "http")).toMatch(
+        /^http:\/\/127\.0\.0\.1:\d+$/,
+      );
+    }, 180_000);
+
+    it("rejects host ports published by the project Compose file", async () => {
+      fs.writeFileSync(
+        path.join(temporaryRoot, "compose.invalid.yml"),
+        [
+          "services:",
+          "  web:",
+          "    image: nginx:alpine",
+          '    ports: ["127.0.0.1:18080:80"]',
+          "",
+        ].join("\n"),
+      );
+
+      await expect(
+        ensureInfrastructure(
+          [
+            {
+              name: "invalid",
+              scope: "workspace",
+              files: ["compose.invalid.yml"],
+              ports: {
+                http: { service: "web", containerPort: 80 },
+              },
+            },
+          ],
+          {
+            identity,
+            projectRoot: temporaryRoot,
+            startIfStopped: true,
+          },
+        ),
+      ).rejects.toThrow(/publish host ports/);
+    }, 60_000);
+  },
+);
 
 afterAll(async () => {
   if (infrastructure) {

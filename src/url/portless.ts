@@ -1,34 +1,25 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
-import type { UrlContext, WorkspaceIdentity } from "../types";
-import { conflictError } from "../core/errors";
-import { acquireLock, type LockHandle } from "../core/lock";
+import type { Command, UrlContext, WorkspaceIdentity } from "../types";
+import { redactDiagnosticText } from "../core/env-resolve";
 import { findAvailablePort } from "../platform/ports";
-import { sha256 } from "../util/hash";
 import { run } from "../util/proc";
 
 /**
- * Public HTTPS hostnames with wildcard subdomains, via the `portless` proxy.
+ * Public HTTPS hostnames, delegated to the `portless` process wrapper.
  *
- * Deliberately NOT using `portless run`: that path unconditionally prefixes the
- * hostname with a name derived from the branch, which collides whenever two
- * worktrees share a branch's last segment and disappears entirely on the
- * default branch. `portless alias` registers the exact hostname we ask for, and
- * WorkTrellis supervises the app process itself — which it must do anyway, for
- * tree-kill and orphan reaping.
+ * WorkTrellis supplies an exact worktree-safe name and deterministic port.
+ * Portless owns proxy startup, route conflicts, registration, framework
+ * adaptation, and cleanup. WorkTrellis supervises the Portless wrapper as the
+ * foreground app process, so its existing tree-kill and orphan reaping still
+ * cover the complete process tree.
  */
 
 export interface PortlessProbe {
   available: boolean;
   reason?: string;
   binary?: string;
-}
-
-function stateDir(): string {
-  const override = process.env.PORTLESS_STATE_DIR?.trim();
-  return override ? path.resolve(override) : path.join(os.homedir(), ".portless");
 }
 
 export function findPortlessBinary(projectRoot: string): string | null {
@@ -74,34 +65,90 @@ async function portless(
   return run(process.execPath, [binary, ...args], {
     quiet: true,
     timeoutMs: options.timeoutMs ?? 60_000,
-    env: { ...process.env, PORTLESS_WILDCARD: "1" },
+    env: { ...process.env },
   });
 }
 
-/** Start the shared proxy if it is not already running. Idempotent. */
-async function ensureProxy(binary: string): Promise<{ ok: boolean; detail?: string }> {
-  const result = await portless(binary, ["proxy", "start", "--wildcard"], {
-    timeoutMs: 120_000,
-  });
+/**
+ * Ask Portless to ensure its shared proxy is ready before WorkTrellis detaches
+ * the supervised process tree. Retry interactively only when the terminal can
+ * satisfy Portless's own first-run trust/elevation prompts.
+ */
+async function ensurePortlessProxy(
+  binary: string,
+  wildcard: boolean,
+): Promise<{ ok: true } | { ok: false; detail: string }> {
+  const args = ["proxy", "start", ...(wildcard ? ["--wildcard"] : [])];
+  const quiet = await portless(binary, args, { timeoutMs: 120_000 });
+  if (quiet.code === 0) return { ok: true };
 
-  if (result.code === 0) return { ok: true };
-
-  // Already running is a success for our purposes.
-  const output = `${result.stdout}\n${result.stderr}`.toLowerCase();
-  if (output.includes("already running")) return { ok: true };
+  if (process.stdin.isTTY) {
+    const interactive = await run(process.execPath, [binary, ...args], {
+      timeoutMs: 120_000,
+      stdin: "inherit",
+      env: { ...process.env },
+    });
+    if (interactive.code === 0) return { ok: true };
+  }
 
   return {
     ok: false,
-    detail: `${result.stderr || result.stdout}`.trim().split("\n").slice(-3).join(" "),
+    detail: redactDiagnosticText(
+      `${quiet.stderr || quiet.stdout}`
+        .trim()
+        .split("\n")
+        .slice(-3)
+        .join(" "),
+      process.env,
+    ),
   };
 }
 
 export interface PortlessRegistration {
   url: UrlContext;
-  /** Hostname registered with the proxy; must be released on shutdown. */
-  aliasName: string;
-  /** Remove the route and relinquish its machine-wide ownership lease. */
+  /** App-process wrapper that delegates all hostname lifecycle to Portless. */
+  appRunner: PortlessAppRunner;
+  /** WorkTrellis claims no Portless route state itself. */
   release: () => Promise<void>;
+}
+
+export interface PortlessAppRunner {
+  binary: string;
+  aliasName: string;
+  listenPort: number;
+  tailscale: boolean;
+}
+
+/**
+ * Let Portless own local routing and optional private sharing while
+ * WorkTrellis continues to supervise the foreground process tree.
+ */
+export function wrapCommandForPortless(
+  command: Command,
+  runner: PortlessAppRunner,
+  projectRoot: string,
+): Command {
+  const child =
+    "node" in command
+      ? [
+          process.execPath,
+          path.resolve(projectRoot, command.node[0]!),
+          ...command.node.slice(1),
+        ]
+      : [command.bin, ...command.args];
+
+  return {
+    node: [
+      runner.binary,
+      "--name",
+      runner.aliasName,
+      ...(runner.tailscale ? ["--tailscale"] : []),
+      "--app-port",
+      String(runner.listenPort),
+      "--",
+      ...child,
+    ],
+  };
 }
 
 /** The hostname this workspace uses, without contacting the proxy. */
@@ -115,9 +162,7 @@ export function portlessAliasName(
 /**
  * Describe the URL this workspace *would* use, registering nothing.
  *
- * Read-only commands must never touch the route table: re-registering an alias
- * while the app is running would repoint the live hostname at a port nothing is
- * listening on.
+ * Read-only commands must never contact or mutate Portless.
  */
 export function previewPortlessUrl(
   identity: WorkspaceIdentity,
@@ -139,36 +184,28 @@ export function previewPortlessUrl(
   };
 }
 
-export async function claimPortlessAlias(
-  aliasName: string,
-  timeoutMs = 250,
-): Promise<LockHandle> {
-  try {
-    return await acquireLock(`url-${sha256(aliasName).slice(0, 16)}`, {
-      timeoutMs,
-    });
-  } catch (caught) {
-    conflictError(
-      `Cannot claim https://${aliasName}.localhost: another WorkTrellis process is already using it.`,
-      `Stop the other worktree or choose a different \`url.hostname\` in .worktrellis/local.json.\n${(caught as Error).message}`,
-    );
-  }
-}
-
 export async function resolvePortlessUrl(
   identity: WorkspaceIdentity,
-  options: { projectRoot: string; hostname?: string },
+  options: {
+    projectRoot: string;
+    hostname?: string;
+    tailscale?: boolean;
+    wildcard?: boolean;
+  },
 ): Promise<PortlessRegistration | { failed: true; reason: string }> {
   const probe = probePortless(options.projectRoot);
   if (!probe.available || !probe.binary) {
     return { failed: true, reason: probe.reason ?? "portless is unavailable" };
   }
 
-  const proxy = await ensureProxy(probe.binary);
+  const proxy = await ensurePortlessProxy(
+    probe.binary,
+    options.wildcard ?? false,
+  );
   if (!proxy.ok) {
     return {
       failed: true,
-      reason: `the portless proxy would not start${proxy.detail ? `: ${proxy.detail}` : ""}`,
+      reason: `portless could not start its proxy${proxy.detail ? `: ${proxy.detail}` : ""}`,
     };
   }
 
@@ -180,22 +217,6 @@ export async function resolvePortlessUrl(
   // tenant subdomains sit one level deeper — exactly the wildcard depth the
   // proxy resolves.
   const aliasName = portlessAliasName(identity, options.hostname);
-  const lease = await claimPortlessAlias(aliasName);
-
-  const registered = await portless(probe.binary, [
-    "alias",
-    aliasName,
-    String(listenPort),
-    "--force",
-  ]);
-
-  if (registered.code !== 0) {
-    lease.release();
-    return {
-      failed: true,
-      reason: `could not register the hostname: ${registered.stderr.trim() || registered.stdout.trim()}`,
-    };
-  }
 
   const resolved = await portless(probe.binary, [
     "get",
@@ -204,11 +225,9 @@ export async function resolvePortlessUrl(
   ]);
 
   if (resolved.code !== 0 || !resolved.stdout.trim()) {
-    await releasePortlessAlias(options.projectRoot, aliasName);
-    lease.release();
     return {
       failed: true,
-      reason: "could not read the registered URL back from portless",
+      reason: "could not resolve the local URL through portless",
     };
   }
 
@@ -217,8 +236,6 @@ export async function resolvePortlessUrl(
   try {
     parsedUrl = new URL(appUrl);
   } catch {
-    await releasePortlessAlias(options.projectRoot, aliasName);
-    lease.release();
     return {
       failed: true,
       reason: `portless returned an invalid URL: ${appUrl}`,
@@ -227,11 +244,10 @@ export async function resolvePortlessUrl(
   const rootDomain = parsedUrl.hostname;
 
   const providerEnv: Record<string, string> = {};
-  const caPath = path.join(stateDir(), "ca.pem");
-  if (fs.existsSync(caPath) && !process.env.NODE_EXTRA_CA_CERTS) {
-    // Without this, server-side fetches from the app to its own HTTPS origin
-    // fail certificate validation.
-    providerEnv.NODE_EXTRA_CA_CERTS = caPath;
+  if (options.wildcard && process.env.PORTLESS_WILDCARD === undefined) {
+    // WorkTrellis expresses that tenant routing is required; Portless owns how
+    // the shared proxy satisfies and persists that requirement.
+    providerEnv.PORTLESS_WILDCARD = "1";
   }
 
   const url: UrlContext = {
@@ -246,20 +262,26 @@ export async function resolvePortlessUrl(
     providerEnv,
   };
 
-  let released = false;
   return {
     url,
-    aliasName,
+    appRunner: {
+      binary: probe.binary,
+      aliasName,
+      listenPort,
+      tailscale: options.tailscale ?? false,
+    },
     release: async () => {
-      if (released) return;
-      released = true;
-      await releasePortlessAlias(options.projectRoot, aliasName);
-      lease.release();
+      // Portless removes its process-backed route when the wrapped app exits.
     },
   };
 }
 
-/** Release a hostname. Alias routes are stored with pid 0, so nothing else reaps them. */
+/**
+ * Remove a legacy static alias recorded by WorkTrellis 0.2.x.
+ *
+ * New launches are process-backed and cleaned up by Portless itself. Keep this
+ * compatibility path so `worktrellis down` can still clean an old run record.
+ */
 export async function releasePortlessAlias(
   projectRoot: string,
   aliasName: string,

@@ -49,3 +49,6 @@ jobs:
       - run: pnpm test test/compose.integration.test.ts
         env:
           WORKTRELLIS_COMPOSE_TEST: "1"
+      - run: pnpm test test/worktree-scopes.smoke.test.ts
+        env:
+          WORKTRELLIS_COMPOSE_TEST: "1"

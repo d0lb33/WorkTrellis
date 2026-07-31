@@ -29,8 +29,10 @@ export type ResourceString = string | ((
 export interface PostgresDatabaseOptions {
   endpoint: ResourceEndpoint;
   isolation: "database";
-  user?: ResourceString;
-  password?: ResourceString;
+  /** Project-owned login matching the configured PostgreSQL service. */
+  user: ResourceString;
+  /** Project-owned credential or base-environment resolver. */
+  password: ResourceString;
 }
 
 export interface RedisNamespaceOptions {
@@ -43,8 +45,10 @@ export interface RedisNamespaceOptions {
 export interface S3BucketOptions {
   endpoint: ResourceEndpoint;
   isolation: "bucket";
-  accessKey?: ResourceString;
-  secretKey?: ResourceString;
+  /** Project-owned access key or base-environment resolver. */
+  accessKey: ResourceString;
+  /** Project-owned secret key or base-environment resolver. */
+  secretKey: ResourceString;
   region?: ResourceString;
   /** Use HTTPS when the endpoint is terminated locally. */
   secure?: boolean;
@@ -69,8 +73,16 @@ export function postgresDatabase(
     endpoint: options.endpoint,
     resolve(context) {
       const { workspace, endpoint } = context;
-      const user = resolveString(options.user, context, "postgres");
-      const password = resolveString(options.password, context, "postgres");
+      const user = resolveRequiredString(
+        options.user,
+        context,
+        "postgresDatabase().user",
+      );
+      const password = resolveRequiredString(
+        options.password,
+        context,
+        "postgresDatabase().password",
+      );
       const database = buildDatabaseName(workspace.project, workspace.slug);
       return {
         host: endpoint.host,
@@ -142,8 +154,16 @@ export function s3Bucket(
       return {
         endpoint: endpoint.url(options.secure ? "https" : "http"),
         bucket: buildBucketName(workspace.project, workspace.slug),
-        accessKey: resolveString(options.accessKey, context, "minioadmin"),
-        secretKey: resolveString(options.secretKey, context, "minioadmin"),
+        accessKey: resolveRequiredString(
+          options.accessKey,
+          context,
+          "s3Bucket().accessKey",
+        ),
+        secretKey: resolveRequiredString(
+          options.secretKey,
+          context,
+          "s3Bucket().secretKey",
+        ),
         region: resolveString(options.region, context, "us-east-1"),
       };
     },
@@ -334,4 +354,18 @@ function resolveString(
 ): string {
   const resolved = typeof value === "function" ? value(context) : value;
   return resolved ?? fallback;
+}
+
+function resolveRequiredString(
+  value: ResourceString | undefined,
+  context: ResourceResolveContext,
+  field: string,
+): string {
+  const resolved = typeof value === "function" ? value(context) : value;
+  if (resolved?.trim()) return resolved;
+
+  throw new WorkTrellisError(`${field} must resolve to a non-empty value.`, {
+    remediation:
+      "Declare the credential in the project-owned adapter configuration, or resolve it from `baseEnv`.",
+  });
 }

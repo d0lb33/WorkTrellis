@@ -3,6 +3,7 @@ import fs from "node:fs";
 import { parseArgs, flagBoolean, flagList, flagString } from "./core/args";
 import { runUp } from "./commands/up";
 import { WorkTrellisError, EXIT } from "./core/errors";
+import { redactDiagnosticText } from "./core/env-resolve";
 import { runDoctor } from "./commands/doctor";
 import {
   runDb,
@@ -57,6 +58,7 @@ ${c.bold("Introspection:")}
 ${c.bold("Global options:")}
   --cwd <dir>              Run as if from another directory
   --config <file>          Use a specific WorkTrellis config file
+  --tailscale              Ask Portless to share the app on your tailnet
   --json                   Machine-readable output where supported
   --no-color               Disable ANSI color
   -q, --quiet              Only errors
@@ -105,6 +107,9 @@ const COMMANDS: Record<string, CommandHandler> = {
       seed: typeof seedFlag === "string" ? seedFlag : seedFlag === true,
       prefix: flagBoolean(args, "prefix", true),
       raw: flagString(args, "raw"),
+      tailscale: args.flags.has("tailscale")
+        ? flagBoolean(args, "tailscale")
+        : undefined,
     });
   },
   down: (args) =>
@@ -235,10 +240,13 @@ main(process.argv.slice(2))
   })
   .catch((caught: unknown) => {
     if (caught instanceof WorkTrellisError) {
-      error(caught.message);
+      error(redactDiagnosticText(caught.message, process.env));
       if (caught.remediation) {
         info("");
-        for (const line of caught.remediation.split("\n")) {
+        for (const line of redactDiagnosticText(
+          caught.remediation,
+          process.env,
+        ).split("\n")) {
           info(`    ${line}`);
         }
       }
@@ -249,6 +257,11 @@ main(process.argv.slice(2))
     // Anything that is not a WorkTrellisError is a bug in WorkTrellis itself, so the
     // stack trace is the useful output.
     error("WorkTrellis hit an unexpected error:");
-    console.error(caught);
+    console.error(
+      redactDiagnosticText(
+        caught instanceof Error ? caught.stack ?? caught.message : String(caught),
+        process.env,
+      ),
+    );
     process.exitCode = EXIT.checkFailed;
   });

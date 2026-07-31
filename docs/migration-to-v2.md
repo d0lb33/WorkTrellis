@@ -1,5 +1,9 @@
 # Migrate to configuration version 2
 
+> Historical migration: current WorkTrellis releases require configuration v3.
+> Complete this migration first when starting from v1, then follow
+> [the v3 migration guide](migration-to-v3.md).
+
 WorkTrellis 0.2 deliberately makes a clean break from configuration version 1.
 It does not translate v1 service definitions or import `.devstack` state.
 

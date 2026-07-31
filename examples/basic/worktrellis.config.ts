@@ -1,7 +1,7 @@
 import { defineConfig, postgresDatabase } from "worktrellis";
 
 export default defineConfig({
-  configVersion: 2,
+  configVersion: 3,
   project: "basic",
 
   compose: [
@@ -23,6 +23,8 @@ export default defineConfig({
     database: postgresDatabase({
       endpoint: { stack: "local", port: "database" },
       isolation: "database",
+      user: "postgres",
+      password: "postgres",
     }),
   },
 

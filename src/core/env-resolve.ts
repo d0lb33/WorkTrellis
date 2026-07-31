@@ -140,3 +140,66 @@ export function displayValue(key: string, value: string): string {
   // Credentials embedded in a URL are still credentials.
   return value.replace(/(\/\/[^:/@]+:)([^@]+)(@)/, "$1***$3");
 }
+
+function collectSecretValues(
+  source: unknown,
+  values: Set<string>,
+  key = "",
+  seen = new Set<object>(),
+): void {
+  if (typeof source === "string") {
+    if (key && looksSecret(key) && source.length > 0) {
+      values.add(source);
+      try {
+        values.add(encodeURIComponent(source));
+      } catch {
+        // The original value is still safe to redact.
+      }
+    }
+    return;
+  }
+  if (!source || typeof source !== "object" || seen.has(source)) return;
+  seen.add(source);
+
+  if (Array.isArray(source)) {
+    for (const value of source) collectSecretValues(value, values, key, seen);
+    return;
+  }
+
+  for (const [childKey, value] of Object.entries(
+    source as Record<string, unknown>,
+  )) {
+    collectSecretValues(value, values, childKey, seen);
+  }
+}
+
+/**
+ * Scrub diagnostic text before it is printed.
+ *
+ * Sources may be resolved environments or resource objects. Secret-looking
+ * keys are replaced exactly, including their URL-encoded form, and credentials
+ * embedded in arbitrary URLs are always hidden.
+ */
+export function redactDiagnosticText(
+  text: string,
+  ...sources: unknown[]
+): string {
+  let redacted = text.replace(
+    /([a-z][a-z0-9+.-]*:\/\/[^:/@\s]+:)([^@\s]+)(@)/gi,
+    "$1***$3",
+  );
+  redacted = redacted.replace(
+    /([?&][^=\s&#]*(?:token|secret|password|credential|api[_-]?key|access[_-]?key)[^=\s&#]*=)([^&#\s]*)/gi,
+    "$1***",
+  );
+
+  const values = new Set<string>();
+  for (const source of sources) collectSecretValues(source, values);
+
+  for (const value of [...values].sort((left, right) => right.length - left.length)) {
+    if (value.length === 0) continue;
+    redacted = redacted.split(value).join("***");
+  }
+
+  return redacted;
+}

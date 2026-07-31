@@ -291,7 +291,7 @@ export type DoctorCheck<
   TAdapters extends ResourceAdapters = ResourceAdapters,
 > = (context: EnvContext<TAdapters>) => Promise<DoctorResult>;
 
-export const WORKTRELLIS_CONFIG_VERSION = 2 as const;
+export const WORKTRELLIS_CONFIG_VERSION = 3 as const;
 export type WorkTrellisConfigVersion = typeof WORKTRELLIS_CONFIG_VERSION;
 
 export interface WorkTrellisConfig<

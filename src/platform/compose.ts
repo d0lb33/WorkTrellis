@@ -7,6 +7,7 @@ import { atomicWrite, ensureDirectory } from "../util/fs";
 import { run } from "../util/proc";
 import type { ContainerEngine } from "./engine";
 import type { RenderedStack } from "./compose-render";
+import { redactDiagnosticText } from "../core/env-resolve";
 
 export interface ComposePublisher {
   URL?: string;
@@ -169,13 +170,16 @@ export class ComposeStack {
       throw new WorkTrellisError(
         `Failed to start ${this.rendered.stackId}.`,
         {
-          remediation: [waited.stderr, plain.stderr]
-            .map((text) => text.trim())
-            .filter(Boolean)
-            .join("\n")
-            .split("\n")
-            .slice(-6)
-            .join("\n"),
+          remediation: redactDiagnosticText(
+            [waited.stderr, plain.stderr]
+              .map((text) => text.trim())
+              .filter(Boolean)
+              .join("\n")
+              .split("\n")
+              .slice(-6)
+              .join("\n"),
+            this.rendered.environment,
+          ),
         },
       );
     }
@@ -197,11 +201,14 @@ export class ComposeStack {
       throw new WorkTrellisError(
         `Project Compose definition for ${this.rendered.name} is invalid.`,
         {
-          remediation: result.stderr
-            .trim()
-            .split("\n")
-            .slice(-8)
-            .join("\n"),
+          remediation: redactDiagnosticText(
+            result.stderr
+              .trim()
+              .split("\n")
+              .slice(-8)
+              .join("\n"),
+            this.rendered.environment,
+          ),
         },
       );
     }
@@ -256,7 +263,12 @@ export class ComposeStack {
     if (result.code !== 0) {
       throw new WorkTrellisError(
         `Failed to stop ${this.rendered.stackId}.`,
-        { remediation: result.stderr.trim().split("\n").slice(-4).join("\n") },
+        {
+          remediation: redactDiagnosticText(
+            result.stderr.trim().split("\n").slice(-4).join("\n"),
+            this.rendered.environment,
+          ),
+        },
       );
     }
   }

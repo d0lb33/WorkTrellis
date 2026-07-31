@@ -3,6 +3,7 @@ import path from "node:path";
 
 import type { BootstrapContext, BootstrapHooks, WorkspaceIdentity } from "../types";
 import { WorkTrellisError, environmentError } from "../core/errors";
+import { redactDiagnosticText } from "../core/env-resolve";
 import { c, step } from "../util/log";
 import { run } from "../util/proc";
 
@@ -223,15 +224,26 @@ function buildBootstrapContext(options: {
       });
 
       if (result.code !== 0) {
+        const diagnosticSources = [
+          options.env,
+          execOptions?.env,
+          { databaseUrl: options.databaseUrl },
+        ];
         throw new WorkTrellisError(
-          `${path.basename(bin)} ${args.join(" ")} failed (exit ${result.code}).`,
+          redactDiagnosticText(
+            `${path.basename(bin)} ${args.join(" ")} failed (exit ${result.code}).`,
+            ...diagnosticSources,
+          ),
           {
-            remediation: [result.stdout, result.stderr]
-              .join("\n")
-              .trim()
-              .split("\n")
-              .slice(-12)
-              .join("\n"),
+            remediation: redactDiagnosticText(
+              [result.stdout, result.stderr]
+                .join("\n")
+                .trim()
+                .split("\n")
+                .slice(-12)
+                .join("\n"),
+              ...diagnosticSources,
+            ),
           },
         );
       }
