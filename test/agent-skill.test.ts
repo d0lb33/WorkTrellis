@@ -13,12 +13,13 @@ async function read(relativePath: string): Promise<string> {
 describe("WorkTrellis agent skill", () => {
   it("has portable skill metadata and no unfinished placeholders", async () => {
     const skill = await read("SKILL.md");
-    const frontmatter = skill.match(/^---\n([\s\S]*?)\n---\n/);
+    const normalizedSkill = skill.replaceAll("\r\n", "\n");
+    const frontmatter = normalizedSkill.match(/^---\n([\s\S]*?)\n---\n/);
 
     expect(frontmatter?.[1]).toMatch(/^name: worktrellis$/m);
     expect(frontmatter?.[1]).toMatch(/^description: .+$/m);
     expect(frontmatter?.[1]).not.toMatch(/^metadata:/m);
-    expect(skill).not.toContain("[TODO");
+    expect(normalizedSkill).not.toContain("[TODO");
   });
 
   it("keeps every linked reference inside the installable skill", async () => {

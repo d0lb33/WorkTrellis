@@ -1134,7 +1134,7 @@ describe("WorkTrellis Portless process delegation", () => {
         "3210",
         "--",
         process.execPath,
-        "/project/node_modules/next/dist/bin/next",
+        path.resolve("/project", "node_modules/next/dist/bin/next"),
         "dev",
       ],
     });

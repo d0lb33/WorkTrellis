@@ -5,12 +5,6 @@ All notable changes to WorkTrellis are documented here. The project follows
 
 ## Unreleased
 
-### Added
-
-- An installable `worktrellis` AI agent skill for adopting, validating,
-  migrating, and troubleshooting project setups while preserving the
-  WorkTrellis, Compose, Portless, and application responsibility boundaries.
-
 ## 0.3.0 - 2026-07-30
 
 ### Breaking
@@ -24,6 +18,9 @@ All notable changes to WorkTrellis are documented here. The project follows
 
 ### Added
 
+- An installable `worktrellis` AI agent skill for adopting, validating,
+  migrating, and troubleshooting project setups while preserving the
+  WorkTrellis, Compose, Portless, and application responsibility boundaries.
 - A thin `worktrellis up --tailscale` handoff that runs the app process through
   Portless. Portless remains the sole owner of Tailscale configuration, URLs,
   and cleanup.
