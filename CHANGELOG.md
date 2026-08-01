@@ -5,6 +5,35 @@ All notable changes to WorkTrellis are documented here. The project follows
 
 ## Unreleased
 
+## 0.4.0 - 2026-08-01
+
+### Breaking
+
+- Starting a machine-scoped definition no longer creates another physical
+  Compose project automatically when retained variants exist. Interactive
+  terminals require an explicit reconcile-or-fresh choice; non-interactive
+  runs exit with code 4 until that choice is supplied.
+
+### Added
+
+- Machine-local lineage selection separates the desired compatibility identity
+  from the physical Compose project and its retained ports and volumes.
+- `services variants`, `services reconcile`, `--new-variant`, and targeted
+  `services down --variant` workflows for inspecting and coordinating retained
+  machine data.
+- Optional `volumeDataVersions` metadata lets projects explicitly state when a
+  named volume's data format remains reusable across stateful definition
+  changes.
+- Machine-global run leases identify active worktrees before shared
+  infrastructure is reconciled or stopped.
+
+### Fixed
+
+- Definition-only changes such as replacing a floating image tag with its
+  already-resolved digest can be applied in place without making existing local
+  data appear to disappear.
+- Read-only commands no longer create or rewrite rendered stack definitions.
+
 ## 0.3.0 - 2026-07-30
 
 ### Breaking

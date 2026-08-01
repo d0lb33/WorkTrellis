@@ -186,8 +186,9 @@ describe("WorkTrellis diagnostic JSON", () => {
       compose: [
         {
           name: "local",
-          scope: "machine",
-          stackId: "worktrellis-machine-local",
+        scope: "machine",
+        stackId: "worktrellis-machine-local",
+        compatibilityId: "worktrellis-machine-local",
           ports: { database: 5432 },
           running: true,
           reachable: false,
@@ -822,6 +823,7 @@ describe("WorkTrellis resource isolation", () => {
         standard: {
           name: "standard",
           scope: "machine",
+          compatibilityId: "worktrellis-machine-standard",
           projectName: "worktrellis-machine-standard",
           ports: { postgres: 5432, redis: 6379, minio: 9000 },
         },
@@ -868,6 +870,7 @@ describe("WorkTrellis resource isolation", () => {
         standard: {
           name: "standard",
           scope: "machine",
+          compatibilityId: "worktrellis-machine-standard",
           projectName: "worktrellis-machine-standard",
           ports: { postgres: 5432, minio: 9000 },
         },
@@ -912,6 +915,7 @@ describe("WorkTrellis resource isolation", () => {
         search: {
           name: "search",
           scope: "workspace",
+          compatibilityId: "worktrellis-test-search",
           projectName: "worktrellis-test-search",
           ports: { api: 9200 },
         },

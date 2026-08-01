@@ -86,6 +86,15 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
     } else {
       checks.push(ok(`${status.name} ready`, `ports ${ports}`));
     }
+    if ((status.retainedVariantCount ?? 0) > 0) {
+      checks.push(
+        warn(
+          `${status.name} has ${status.retainedVariantCount} other retained machine variant(s)`,
+          "Data is retained and may belong to an older definition.",
+          `worktrellis services variants ${status.name}`,
+        ),
+      );
+    }
   }
 
   // Env conflicts: the reason a worktree might not be as isolated as it looks.

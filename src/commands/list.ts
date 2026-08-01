@@ -78,6 +78,16 @@ export function runList(options: ListOptions): number {
           `${c.gray(row.seen)}`,
       );
       info(`    ${c.gray(row.path)}`);
+      const record = entries.find((entry) => entry.slug === row.slug);
+      for (const stack of record?.composeProjects ?? []) {
+        info(
+          `    ${c.gray(`${stack.name}: ${stack.projectName}${
+            stack.projectName !== stack.compatibilityId
+              ? ` (desired ${stack.compatibilityId})`
+              : ""
+          }`)}`,
+        );
+      }
     }
 
     info("");

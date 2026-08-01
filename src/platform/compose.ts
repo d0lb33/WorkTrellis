@@ -8,6 +8,7 @@ import { run } from "../util/proc";
 import type { ContainerEngine } from "./engine";
 import type { RenderedStack } from "./compose-render";
 import { redactDiagnosticText } from "../core/env-resolve";
+import { writeLineageManifest } from "./lineage-state";
 
 export interface ComposePublisher {
   URL?: string;
@@ -97,7 +98,10 @@ export class ComposeStack {
     ensureDirectory(this.directory);
 
     const hashFile = path.join(this.directory, "spec.sha256");
-    if (this.matchesDefinition()) return false;
+    if (this.matchesDefinition()) {
+      this.persistLineageManifest();
+      return false;
+    }
 
     for (const [index, file] of this.rendered.files.entries()) {
       atomicWrite(this.composeFiles[index]!, file.contents, { mode: 0o644 });
@@ -108,7 +112,22 @@ export class ComposeStack {
       { mode: 0o644 },
     );
     atomicWrite(hashFile, `${this.rendered.specHash}\n`, { mode: 0o644 });
+    this.persistLineageManifest();
     return true;
+  }
+
+  private persistLineageManifest(): void {
+    if (this.rendered.scope !== "machine") return;
+    writeLineageManifest({
+      version: 1,
+      stackName: this.rendered.name,
+      scope: "machine",
+      compatibilityId: this.rendered.compatibilityId,
+      projectName: this.rendered.stackId,
+      definitionHash: this.rendered.definitionHash,
+      volumeDataVersions: { ...this.rendered.volumeDataVersions },
+      updatedAt: new Date().toISOString(),
+    });
   }
 
   private args(
@@ -158,6 +177,22 @@ export class ComposeStack {
       { quiet: true, timeoutMs: (timeoutSeconds + 30) * 1000 },
     );
     if (waited.code === 0) return;
+
+    const waitUnsupported =
+      /(?:unknown|unrecognized|no such) (?:flag|option).*--wait|flag provided but not defined.*wait/i.test(
+        `${waited.stderr}\n${waited.stdout}`,
+      );
+    if (!waitUnsupported) {
+      throw new WorkTrellisError(
+        `Failed to start ${this.rendered.stackId} and reach Compose health.`,
+        {
+          remediation: redactDiagnosticText(
+            waited.stderr.trim().split("\n").slice(-8).join("\n"),
+            this.rendered.environment,
+          ),
+        },
+      );
+    }
 
     // Older Compose builds have no --wait; fall back and let the caller's own
     // readiness probes decide when the service is usable.
@@ -215,6 +250,7 @@ export class ComposeStack {
 
     let model: {
       services?: Record<string, { ports?: unknown[] }>;
+      volumes?: Record<string, unknown>;
     };
     try {
       model = JSON.parse(result.stdout) as typeof model;
@@ -253,6 +289,19 @@ export class ComposeStack {
         },
       );
     }
+
+    const unknownDataVersions = Object.keys(
+      this.rendered.volumeDataVersions,
+    ).filter((volume) => !model.volumes?.[volume]);
+    if (unknownDataVersions.length > 0) {
+      throw new WorkTrellisError(
+        `volumeDataVersions references unknown Compose volume(s): ${unknownDataVersions.join(", ")}.`,
+        {
+          remediation:
+            "Use top-level named volume keys from the merged project Compose definition.",
+        },
+      );
+    }
   }
 
   async down(options: { volumes?: boolean } = {}): Promise<void> {
@@ -274,6 +323,12 @@ export class ComposeStack {
   }
 
   async ps(): Promise<ComposePsEntry[]> {
+    if (
+      !fs.existsSync(this.directory) ||
+      this.composeFiles.some((file) => !fs.existsSync(file))
+    ) {
+      return [];
+    }
     const result = await this.exec(["ps", "--format", "json", "--all"], {
       quiet: true,
       timeoutMs: 60_000,

@@ -17,6 +17,10 @@ import {
 } from "../url/portless";
 import type { PostgresDatabase, ProcessSpec } from "../types";
 import { redactDiagnosticText } from "../core/env-resolve";
+import {
+  clearMachineRunLease,
+  writeMachineRunLease,
+} from "../platform/lineage-state";
 
 export interface UpOptions {
   cwd?: string;
@@ -29,6 +33,7 @@ export interface UpOptions {
   prefix?: boolean;
   raw?: string;
   tailscale?: boolean;
+  newVariants?: string[];
 }
 
 function wrapAppWithPortless(
@@ -64,6 +69,7 @@ export async function runUp(options: UpOptions): Promise<number> {
     startServices: options.services !== false,
     urlPreference: options.urlPreference,
     tailscale: options.tailscale,
+    allowNewMachineVariants: options.newVariants,
   });
 
   const { context, infrastructure, url, env, envContext } = prepared;
@@ -282,9 +288,25 @@ export async function runUp(options: UpOptions): Promise<number> {
     startedAt: new Date(supervisor.supervisorStartedAt).toISOString(),
     url: url.url,
   });
+  writeMachineRunLease({
+    version: 1,
+    pid: process.pid,
+    startedAtMs: supervisor.supervisorStartedAt,
+    project: identity.project,
+    repoKey: identity.repoKey,
+    slug: identity.slug,
+    branch: identity.branch,
+    worktreeRoot: identity.root,
+    stacks: infrastructure.stacks.map(({ stack }) => ({
+      name: stack.rendered.name,
+      compatibilityId: stack.rendered.compatibilityId,
+      projectName: stack.rendered.stackId,
+    })),
+  });
 
   const uninstall = installSignalHandlers(supervisor, async () => {
     clearLiveRunState(context.paths.state);
+    clearMachineRunLease(identity.repoKey, identity.slug);
     await url.release();
   });
 
@@ -296,6 +318,7 @@ export async function runUp(options: UpOptions): Promise<number> {
   uninstall();
   clearRunRecord(context.paths.run);
   clearLiveRunState(context.paths.state);
+  clearMachineRunLease(identity.repoKey, identity.slug);
   await url.release();
 
   return code === 0 ? EXIT.ok : EXIT.child;

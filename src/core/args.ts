@@ -26,6 +26,8 @@ const VALUE_EXPECTED = new Set([
   "tail",
   "project",
   "tenant",
+  "new-variant",
+  "variant",
 ]);
 
 function expectsValue(flag: string): boolean {

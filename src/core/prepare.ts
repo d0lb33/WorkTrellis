@@ -38,6 +38,7 @@ export async function prepareWorkspace(options: {
    */
   peekUrl?: boolean;
   writeSnapshotFile?: boolean;
+  allowNewMachineVariants?: readonly string[];
 }): Promise<PreparedWorkspace> {
   const context = await buildContext(options);
 
@@ -46,6 +47,7 @@ export async function prepareWorkspace(options: {
     projectRoot: context.projectRoot,
     baseEnv: Object.freeze(Object.fromEntries(context.baseEnv)),
     startIfStopped: options.startServices ?? false,
+    allowNewMachineVariants: options.allowNewMachineVariants,
   });
 
   // Reuse what a live run already registered, when there is one.
@@ -87,6 +89,11 @@ export async function prepareWorkspace(options: {
     touchWorkspaceRecord(context.identity, {
       hostname: url.url.rootDomain,
       appUrl: url.url.appUrl,
+      composeProjects: infrastructure.stacks.map(({ stack }) => ({
+        name: stack.rendered.name,
+        compatibilityId: stack.rendered.compatibilityId,
+        projectName: stack.rendered.stackId,
+      })),
     });
   }
 

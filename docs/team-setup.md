@@ -57,7 +57,7 @@ exact version so the team upgrades intentionally:
 ```json
 {
   "devDependencies": {
-    "worktrellis": "0.2.0"
+    "worktrellis": "0.4.0"
   }
 }
 ```
@@ -107,4 +107,7 @@ Choose the narrowest useful Compose scope:
   worktrees.
 
 Changing or stopping a shared stack can affect other running worktrees. Check
-`worktrellis services status` before planned maintenance.
+`worktrellis services status` and `worktrellis services variants` before
+planned maintenance. Upgrade every active worktree to 0.4 or newer before
+reconciling a legacy lineage; older clients do not understand lineage
+selection.

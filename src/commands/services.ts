@@ -13,6 +13,17 @@ import {
   stackFor,
   type StackStatus,
 } from "../platform/stack";
+import {
+  listMachineVariants,
+  readStackPorts,
+  reconcileMachineLineage,
+} from "../platform/lineage";
+import {
+  consumersForProject,
+  projectSelection,
+} from "../platform/lineage-state";
+import { renderStack } from "../platform/compose-render";
+import { ComposeStack } from "../platform/compose";
 
 export interface ServicesOptions {
   cwd?: string;
@@ -23,6 +34,9 @@ export interface ServicesOptions {
   tail?: number;
   follow?: boolean;
   volumes?: boolean;
+  variant?: string;
+  from?: string;
+  newVariants?: string[];
   portOverrides?: Record<string, number>;
 }
 
@@ -43,7 +57,11 @@ function renderStatuses(statuses: StackStatus[]): void {
           : "";
       return [
         `${status.name} (${status.scope})`,
-        `${state}  ${c.gray(ports)}${detail}`,
+        `${state}  ${c.gray(ports)}${detail}${
+          status.stackId !== status.compatibilityId
+            ? c.gray(`  lineage ${status.stackId}`)
+            : ""
+        }`,
       ];
     }),
   );
@@ -95,6 +113,7 @@ export async function runServices(options: ServicesOptions): Promise<number> {
         projectRoot: context.projectRoot,
         baseEnv,
         startIfStopped: true,
+        allowNewMachineVariants: options.newVariants,
       });
       heading("Compose stacks");
       renderStatuses(result.statuses);
@@ -112,6 +131,66 @@ export async function runServices(options: ServicesOptions): Promise<number> {
 
     case "down": {
       const engine = await detectEngine();
+      if (options.variant) {
+        const spec = specs.find((entry) =>
+          options.variant!.startsWith(`worktrellis-machine-${entry.name}-`),
+        );
+        if (!spec || spec.scope !== "machine") {
+          usageError(
+            `Unknown machine variant ${JSON.stringify(options.variant)}.`,
+            "Use `worktrellis services variants` to list retained variants.",
+          );
+        }
+        const selected = projectSelection(options.variant);
+        if (selected) {
+          warn(
+            `${options.variant} is the selected physical lineage for ${selected.compatibilityId}.`,
+          );
+          info("Use normal `services down`, or reconcile to another lineage first.");
+          return EXIT.conflict;
+        }
+        const consumers = consumersForProject(options.variant).filter(
+          (consumer) => consumer.state !== "stale",
+        );
+        if (consumers.length > 0) {
+          warn(`${options.variant} is still used by ${consumers.map((entry) => entry.slug).join(", ")}.`);
+          return EXIT.conflict;
+        }
+        const desired = renderStack({
+          spec,
+          projectRoot: context.projectRoot,
+          identity: context.identity,
+          baseEnv,
+        });
+        if (!/^[a-z0-9][a-z0-9_-]*$/.test(options.variant)) {
+          usageError(`Invalid Compose project name ${JSON.stringify(options.variant)}.`);
+        }
+        const known = (
+          await listMachineVariants({ engine, rendered: desired })
+        ).some((entry) => entry.projectName === options.variant);
+        if (!known) {
+          usageError(
+            `Unknown retained variant ${JSON.stringify(options.variant)}.`,
+            "Use `worktrellis services variants` to list retained variants.",
+          );
+        }
+        const rendered = renderStack({
+          spec,
+          projectRoot: context.projectRoot,
+          identity: context.identity,
+          baseEnv,
+          physicalProjectName: options.variant,
+          physicalPorts: readStackPorts(options.variant, desired.portSpecs),
+        });
+        info(`  stopping ${c.cyan(options.variant)}`);
+        await new ComposeStack(engine, rendered).down({ volumes: options.volumes });
+        success(
+          options.volumes
+            ? "Variant stopped and its data volumes removed."
+            : "Variant stopped. Data volumes kept.",
+        );
+        return EXIT.ok;
+      }
       for (const spec of specs) {
         const stack = stackFor(
           engine,
@@ -128,6 +207,83 @@ export async function runServices(options: ServicesOptions): Promise<number> {
           ? "Compose stacks stopped and their data volumes removed."
           : "Compose stacks stopped. Data volumes kept.",
       );
+      return EXIT.ok;
+    }
+
+    case "variants": {
+      const engine = await detectEngine();
+      const selectedSpecs = options.service
+        ? specs.filter((spec) => spec.name === options.service)
+        : specs.filter((spec) => spec.scope === "machine");
+      if (options.service && selectedSpecs.length === 0) {
+        usageError(`This project does not declare machine stack "${options.service}".`);
+      }
+      const results = [];
+      for (const spec of selectedSpecs) {
+        const stack = stackFor(
+          engine,
+          spec,
+          context.projectRoot,
+          context.identity,
+          baseEnv,
+        );
+        results.push({
+          stack: spec.name,
+          compatibilityId: stack.rendered.compatibilityId,
+          projectName: stack.rendered.stackId,
+          variants: await listMachineVariants({ engine, rendered: stack.rendered }),
+        });
+      }
+      if (options.json) {
+        console.log(JSON.stringify(results, null, 2));
+        return EXIT.ok;
+      }
+      for (const result of results) {
+        heading(`${result.stack} variants`);
+        if (result.variants.length === 0) {
+          info(c.gray("  none"));
+          continue;
+        }
+        table(
+          result.variants.map((variant) => [
+            `${variant.selected ? "* " : "  "}${variant.projectName}`,
+            `${variant.running ? "running" : "stopped"}  ${variant.volumes.length} volume(s)  ${variant.compatibility}`,
+          ]),
+        );
+        for (const variant of result.variants) {
+          for (const consumer of variant.consumers) {
+            info(
+              c.gray(
+                `    ${variant.projectName}: ${consumer.project}/${consumer.slug} pid ${consumer.pid} ${consumer.state}`,
+              ),
+            );
+          }
+        }
+      }
+      return EXIT.ok;
+    }
+
+    case "reconcile": {
+      const name = options.service;
+      if (!name) {
+        usageError(
+          "A stack name is required.",
+          "Example: worktrellis services reconcile infrastructure --from worktrellis-machine-infrastructure-deadbeef",
+        );
+      }
+      if (!options.from) usageError("`services reconcile` requires `--from <compose-project>`. ");
+      const spec = specs.find((entry) => entry.name === name);
+      if (!spec) usageError(`This project does not declare stack "${name}".`);
+      const engine = await detectEngine();
+      const rendered = await reconcileMachineLineage({
+        engine,
+        spec,
+        projectRoot: context.projectRoot,
+        identity: context.identity,
+        baseEnv,
+        sourceProject: options.from,
+      });
+      success(`Selected ${rendered.stackId} for ${rendered.compatibilityId}.`);
       return EXIT.ok;
     }
 
@@ -149,6 +305,7 @@ export async function runServices(options: ServicesOptions): Promise<number> {
         projectRoot: context.projectRoot,
         baseEnv,
         startIfStopped: true,
+        allowNewMachineVariants: options.newVariants,
       });
       renderStatuses(result.statuses);
       return result.statuses.every((status) => status.reachable)
@@ -206,7 +363,7 @@ export async function runServices(options: ServicesOptions): Promise<number> {
     default:
       return usageError(
         `Unknown services subcommand "${options.subcommand}".`,
-        "Try: up, down, restart, status, logs, adopt",
+        "Try: up, down, restart, status, logs, variants, reconcile, adopt",
       );
   }
 }

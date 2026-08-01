@@ -83,11 +83,20 @@ export interface ComposeStackSpec {
   ports?: Record<string, ComposePortSpec>;
   /** Explicit interpolation values supplied only to Compose. */
   env?: Record<string, ComposeEnvValue>;
+  /**
+   * Opaque project-owned data-format generations, keyed by named Compose
+   * volume. Equal values explicitly authorize in-place reuse when WorkTrellis
+   * cannot otherwise prove a stateful definition is equivalent.
+   */
+  volumeDataVersions?: Record<string, string>;
 }
 
 export interface ResolvedComposeStack {
   name: string;
   scope: InfrastructureScope;
+  /** Hash-derived identity of the desired Compose definition. */
+  compatibilityId: string;
+  /** Actual Compose project holding this stack's containers and volumes. */
   projectName: string;
   ports: Readonly<Record<string, number>>;
 }

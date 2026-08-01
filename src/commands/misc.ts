@@ -40,6 +40,7 @@ import {
   waitForProcessExit,
 } from "../supervise/shutdown";
 import { redactDiagnosticText } from "../core/env-resolve";
+import { clearMachineRunLease } from "../platform/lineage-state";
 
 export interface CommonOptions {
   cwd?: string;
@@ -158,6 +159,7 @@ export async function runDown(options: CommonOptions): Promise<number> {
 
   clearRunRecord(context.paths.run);
   clearLiveRunState(context.paths.state);
+  clearMachineRunLease(context.identity.repoKey, context.identity.slug);
   clearShutdownRequest(context.paths.stop);
 
   if (!hadRun) {
@@ -255,11 +257,14 @@ export async function runStatus(options: CommonOptions): Promise<number> {
   table(
     infrastructure.statuses.map((status) => [
       `${status.name} (${status.scope})`,
-      !status.running
+      (!status.running
         ? c.red("stopped")
         : status.reachable
           ? c.green("ready")
-          : c.yellow("unreachable"),
+          : c.yellow("unreachable")) +
+        (status.retainedVariantCount
+          ? c.yellow(` · ${status.retainedVariantCount} retained variant(s)`)
+          : ""),
     ]),
   );
 

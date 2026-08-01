@@ -46,7 +46,7 @@ ${c.bold("Environment:")}
   run <script>             Run a package script with the resolved environment
 
 ${c.bold("Infrastructure:")}
-  services up|down|restart|status|logs|adopt
+  services up|down|restart|status|logs|variants|reconcile|adopt
   db url|migrate|seed|reset
 
 ${c.bold("Introspection:")}
@@ -110,6 +110,7 @@ const COMMANDS: Record<string, CommandHandler> = {
       tailscale: args.flags.has("tailscale")
         ? flagBoolean(args, "tailscale")
         : undefined,
+      newVariants: flagList(args, "new-variant"),
     });
   },
   down: (args) =>
@@ -175,6 +176,9 @@ const COMMANDS: Record<string, CommandHandler> = {
       tail: Number(flagString(args, "tail") ?? 100),
       follow: flagBoolean(args, "follow"),
       volumes: flagBoolean(args, "volumes"),
+      variant: flagString(args, "variant"),
+      from: flagString(args, "from"),
+      newVariants: flagList(args, "new-variant"),
       portOverrides: collectPortOverrides(args),
     }),
 };

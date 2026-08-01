@@ -26,6 +26,10 @@ export const homePaths = {
   machineConfig: () => path.join(worktrellisHome(), "machine.json"),
   stacks: () => path.join(worktrellisHome(), "stacks"),
   stack: (stackId: string) => path.join(worktrellisHome(), "stacks", stackId),
+  lineageRegistry: () => path.join(worktrellisHome(), "lineages.json"),
+  runLeases: () => path.join(worktrellisHome(), "run-leases"),
+  runLease: (repoKey: string, slug: string) =>
+    path.join(worktrellisHome(), "run-leases", `${repoKey}-${slug}.json`),
   locks: () => path.join(worktrellisHome(), "locks"),
   lock: (name: string) => path.join(worktrellisHome(), "locks", `${name}.lock`),
   workspaces: () => path.join(worktrellisHome(), "workspaces"),
@@ -135,6 +139,11 @@ export interface WorkspaceRecord {
   appUrl: string;
   lastSeenAt: string;
   createdAt: string;
+  composeProjects?: Array<{
+    name: string;
+    compatibilityId: string;
+    projectName: string;
+  }>;
 }
 
 /**
@@ -144,7 +153,11 @@ export interface WorkspaceRecord {
  */
 export function touchWorkspaceRecord(
   identity: WorkspaceIdentity,
-  extra: { hostname: string; appUrl: string },
+  extra: {
+    hostname: string;
+    appUrl: string;
+    composeProjects?: WorkspaceRecord["composeProjects"];
+  },
 ): void {
   const file = homePaths.workspaceIndex(identity.repoKey, identity.slug);
   const existing = readJsonFile<WorkspaceRecord>(file);
@@ -161,6 +174,7 @@ export function touchWorkspaceRecord(
     appUrl: extra.appUrl,
     createdAt: existing?.createdAt ?? now,
     lastSeenAt: now,
+    composeProjects: extra.composeProjects ?? existing?.composeProjects,
   } satisfies WorkspaceRecord);
 }
 

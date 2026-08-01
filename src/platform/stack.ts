@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createInterface } from "node:readline/promises";
 
 import type {
   ComposeContext,
@@ -10,8 +11,20 @@ import type {
 import { conflictError, WorkTrellisError } from "../core/errors";
 import { withLock } from "../core/lock";
 import { homePaths } from "../core/state";
-import { c, step, warn } from "../util/log";
+import { c, info, step, warn } from "../util/log";
 import { readJsonFile } from "../util/fs";
+import {
+  replaceProjectLineageSelection,
+  selectedLineage,
+} from "./lineage-state";
+import {
+  assessReconciliation,
+  listMachineVariants,
+  readStackPorts,
+  reconcileMachineLineage,
+  retainedConflicts,
+  type MachineVariant,
+} from "./lineage";
 import { run } from "../util/proc";
 import { ComposeStack } from "./compose";
 import { renderStack, type RenderedStack } from "./compose-render";
@@ -28,10 +41,12 @@ export interface StackStatus {
   name: string;
   scope: InfrastructureScope;
   stackId: string;
+  compatibilityId: string;
   ports: Record<string, number>;
   running: boolean;
   reachable: boolean;
   detail?: string;
+  retainedVariantCount?: number;
 }
 
 export interface EnsureResult {
@@ -45,6 +60,93 @@ export interface EnsureResult {
 export interface MachineStackVariant {
   stackId: string;
   projectFilesMatch: boolean;
+}
+
+type VariantChoice =
+  | { kind: "fresh" }
+  | { kind: "reconcile"; projectName: string };
+
+async function resolveVariantChoice(options: {
+  spec: ComposeStackSpec;
+  conflicts: MachineVariant[];
+  interactive: boolean;
+}): Promise<VariantChoice> {
+  const canPrompt =
+    options.interactive &&
+    process.stdin.isTTY === true &&
+    process.stdout.isTTY === true &&
+    !process.env.CI;
+  const projects = options.conflicts.map((variant) => variant.projectName);
+  if (!canPrompt) {
+    conflictError(
+      `Machine stack "${options.spec.name}" has retained data in another compatibility variant.`,
+      [
+        ...projects.map((project) => `  ${project}`),
+        "Choose explicitly:",
+        `  worktrellis services reconcile ${options.spec.name} --from <project>`,
+        `  worktrellis up --new-variant ${options.spec.name}`,
+      ].join("\n"),
+    );
+  }
+
+  info("");
+  warn(
+    `Machine stack "${options.spec.name}" has retained containers or volumes in another definition.`,
+  );
+  options.conflicts.forEach((variant, index) => {
+    const state = variant.running ? "running" : "stopped";
+    info(
+      `  ${index + 1}. ${c.cyan(variant.projectName)}  ${state}  ${variant.volumes.length} volume(s)`,
+    );
+    if (variant.reconcileSafe === false) {
+      info(c.gray(`     cannot reconcile: ${variant.reconcileReason}`));
+    }
+  });
+
+  const readline = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const safe = options.conflicts.filter(
+      (variant) => variant.reconcileSafe === true,
+    );
+    if (safe.length === 0) {
+      const answer = (
+        await readline.question("[n] start fresh, [Enter] cancel: ")
+      )
+        .trim()
+        .toLowerCase();
+      if (answer === "n") return { kind: "fresh" };
+      conflictError("Machine-stack selection cancelled.");
+    }
+    let source = safe[0]!;
+    if (safe.length > 1) {
+      const selected = (
+        await readline.question("Select a lineage number to reconcile, or press Enter to cancel: ")
+      ).trim();
+      if (!/^\d+$/.test(selected)) {
+        conflictError("Machine-stack selection cancelled.");
+      }
+      const candidate = options.conflicts[Number(selected) - 1];
+      if (!candidate) conflictError("Machine-stack selection cancelled.");
+      if (candidate.reconcileSafe !== true) {
+        conflictError(`${candidate.projectName} is not safe to reconcile.`);
+      }
+      source = candidate;
+    }
+    const answer = (
+      await readline.question(
+        `[r] reconcile ${source.projectName}, [n] start fresh, [Enter] cancel: `,
+      )
+    )
+      .trim()
+      .toLowerCase();
+    if (answer === "r") {
+      return { kind: "reconcile", projectName: source.projectName };
+    }
+    if (answer === "n") return { kind: "fresh" };
+    conflictError("Machine-stack selection cancelled.");
+  } finally {
+    readline.close();
+  }
 }
 
 function machineStackPrefix(rendered: RenderedStack): string | null {
@@ -163,6 +265,8 @@ export async function ensureInfrastructure(
     baseEnv?: Readonly<Record<string, string>>;
     host?: string;
     startIfStopped?: boolean;
+    allowNewMachineVariants?: readonly string[];
+    interactive?: boolean;
   },
 ): Promise<EnsureResult> {
   const host = options.host ?? "127.0.0.1";
@@ -171,39 +275,114 @@ export async function ensureInfrastructure(
   await assertDaemonRunning(engine);
 
   const context = await engineContext(engine);
-  const runningProjects = startIfStopped
-    ? await runningComposeProjectIds(engine)
-    : new Set<string>();
   const remoteEngineNote =
     context?.isRemote === true
       ? `container engine is remote (${context.name} -> ${context.endpoint}); published ports live on that host`
       : undefined;
 
-  const stacks = specs.map((spec) => ({
-    spec,
-    stack: stackFor(
+  const stacks: Array<{ spec: ComposeStackSpec; stack: ComposeStack }> = [];
+  const statuses: StackStatus[] = [];
+
+  const unknownFreshVariants = (options.allowNewMachineVariants ?? []).filter(
+    (name) =>
+      !specs.some((spec) => spec.name === name && spec.scope === "machine"),
+  );
+  if (unknownFreshVariants.length > 0) {
+    throw new WorkTrellisError(
+      `--new-variant names unknown machine stack(s): ${unknownFreshVariants.join(", ")}.`,
+    );
+  }
+
+  for (const spec of specs) {
+    let stack = stackFor(
       engine,
       spec,
       options.projectRoot,
       options.identity,
       options.baseEnv,
-    ),
-  }));
-  const statuses: StackStatus[] = [];
-
-  for (const { spec, stack } of stacks) {
-    const { rendered } = stack;
-    const specChanged = stack.sync();
-    let healthy = await stack.isHealthy();
-    const machineVariants = findRunningMachineStackVariants(
-      rendered,
-      runningProjects,
     );
-
-    if (machineVariants.length > 0) {
-      warn(describeMachineStackVariants(rendered, machineVariants));
+    if (startIfStopped && spec.scope === "machine") {
+      const variants = await listMachineVariants({
+        engine,
+        rendered: stack.rendered,
+      });
+      if (!selectedLineage(stack.rendered.compatibilityId)) {
+        const exact = variants.filter(
+          (variant) => variant.retained && variant.compatibility === "current",
+        );
+        const automatic =
+          exact.find(
+            (variant) =>
+              variant.projectName === stack.rendered.compatibilityId,
+          ) ?? (exact.length === 1 ? exact[0] : undefined);
+        if (automatic) {
+          replaceProjectLineageSelection({
+            compatibilityId: stack.rendered.compatibilityId,
+            projectName: automatic.projectName,
+            ports: readStackPorts(
+              automatic.projectName,
+              stack.rendered.portSpecs,
+            ),
+            selectedAt: new Date().toISOString(),
+          });
+          stack = stackFor(
+            engine,
+            spec,
+            options.projectRoot,
+            options.identity,
+            options.baseEnv,
+          );
+        }
+      }
+      const conflicts = retainedConflicts(stack.rendered, variants);
+      if (conflicts.length > 0) {
+        const allowFresh = options.allowNewMachineVariants?.includes(spec.name);
+        if (!allowFresh) {
+          for (const conflict of conflicts) {
+            const assessment = await assessReconciliation({
+              engine,
+              spec,
+              projectRoot: options.projectRoot,
+              identity: options.identity,
+              baseEnv: options.baseEnv ?? {},
+              sourceProject: conflict.projectName,
+            });
+            conflict.reconcileSafe = assessment.safe;
+            conflict.reconcileReason = assessment.reason;
+          }
+          const choice = await resolveVariantChoice({
+            spec,
+            conflicts,
+            interactive: options.interactive ?? true,
+          });
+          if (choice.kind === "reconcile") {
+            await reconcileMachineLineage({
+              engine,
+              spec,
+              projectRoot: options.projectRoot,
+              identity: options.identity,
+              baseEnv: options.baseEnv ?? {},
+              sourceProject: choice.projectName,
+            });
+            stack = stackFor(
+              engine,
+              spec,
+              options.projectRoot,
+              options.identity,
+              options.baseEnv,
+            );
+          }
+        }
+      }
     }
-
+    stacks.push({ spec, stack });
+    const { rendered } = stack;
+    // Inspection must not create or rewrite machine state. Mutating commands
+    // sync only after variant selection has been resolved.
+    const specChanged = startIfStopped
+      ? stack.sync()
+      : !stack.matchesDefinition();
+    let healthy = await stack.isHealthy();
     if (!healthy && startIfStopped) {
       await assertPortsAvailable(spec, stack, engine);
 
@@ -237,13 +416,39 @@ export async function ensureInfrastructure(
     );
     const failed = probes.filter((probe) => !probe.reachable);
 
+    if (
+      startIfStopped &&
+      spec.scope === "machine" &&
+      healthy &&
+      failed.length === 0 &&
+      !selectedLineage(rendered.compatibilityId)
+    ) {
+      replaceProjectLineageSelection({
+        compatibilityId: rendered.compatibilityId,
+        projectName: rendered.stackId,
+        ports: { ...rendered.ports },
+        selectedAt: new Date().toISOString(),
+      });
+    }
+
+    const retainedVariantCount =
+      spec.scope === "machine"
+        ? (
+            await listMachineVariants({ engine, rendered })
+          ).filter(
+            (variant) =>
+              variant.retained && variant.projectName !== rendered.stackId,
+          ).length
+        : 0;
     statuses.push({
       name: spec.name,
       scope: spec.scope,
       stackId: rendered.stackId,
+      compatibilityId: rendered.compatibilityId,
       ports: rendered.ports,
       running: healthy,
       reachable: healthy && failed.length === 0,
+      retainedVariantCount,
       detail:
         failed.length > 0
           ? failed
@@ -285,6 +490,7 @@ function composeContext(
       {
         name: spec.name,
         scope: spec.scope,
+        compatibilityId: stack.rendered.compatibilityId,
         projectName: stack.rendered.stackId,
         ports: Object.freeze({ ...stack.rendered.ports }),
       },
@@ -345,9 +551,23 @@ export function stackFor(
   identity: WorkspaceIdentity,
   baseEnv?: Readonly<Record<string, string>>,
 ): ComposeStack {
+  const desired = renderStack({ spec, projectRoot, identity, baseEnv });
+  const selection =
+    spec.scope === "machine"
+      ? selectedLineage(desired.compatibilityId)
+      : null;
   return new ComposeStack(
     engine,
-    renderStack({ spec, projectRoot, identity, baseEnv }),
+    selection
+      ? renderStack({
+          spec,
+          projectRoot,
+          identity,
+          baseEnv,
+          physicalProjectName: selection.projectName,
+          physicalPorts: selection.ports,
+        })
+      : desired,
   );
 }
 

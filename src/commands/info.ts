@@ -4,6 +4,7 @@ import { buildContext, type CommandContext } from "../core/context";
 import { EXIT } from "../core/errors";
 import { readWorkspaceRecords } from "../core/state";
 import { renderStack } from "../platform/compose-render";
+import { selectedLineage } from "../platform/lineage-state";
 import type { ResolvedComposeStack } from "../types";
 import { c, heading, info, table } from "../util/log";
 
@@ -28,12 +29,17 @@ export function resolveInfoComposeProjects(
       identity: context.identity,
       baseEnv,
     });
+    const selection =
+      spec.scope === "machine"
+        ? selectedLineage(rendered.compatibilityId)
+        : null;
 
     return {
       name: rendered.name,
       scope: rendered.scope,
-      projectName: rendered.stackId,
-      ports: Object.freeze({ ...rendered.ports }),
+      compatibilityId: rendered.compatibilityId,
+      projectName: selection?.projectName ?? rendered.stackId,
+      ports: Object.freeze({ ...(selection?.ports ?? rendered.ports) }),
     };
   });
 }
@@ -87,7 +93,11 @@ export async function runInfo(options: InfoOptions): Promise<number> {
     table(
       composeProjects.map((stack) => [
         `${stack.name} (${stack.scope})`,
-        stack.projectName,
+        `${stack.projectName}${
+          stack.projectName !== stack.compatibilityId
+            ? c.gray(`  desired ${stack.compatibilityId}`)
+            : ""
+        }`,
       ]),
     );
   }

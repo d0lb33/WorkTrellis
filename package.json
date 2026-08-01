@@ -1,6 +1,6 @@
 {
   "name": "worktrellis",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "description": "Coordinate project-owned Compose stacks, isolated resources, ports, and environments across Git worktrees.",
   "license": "MIT",

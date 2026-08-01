@@ -16,7 +16,12 @@ export interface RenderedComposeFile {
 }
 
 export interface RenderedStack {
+  /** Actual Compose project name holding containers and volumes. */
   stackId: string;
+  /** Hash-derived identity of the desired project definition. */
+  compatibilityId: string;
+  definitionHash: string;
+  volumeDataVersions: Record<string, string>;
   name: string;
   scope: ComposeStackSpec["scope"];
   files: RenderedComposeFile[];
@@ -40,6 +45,10 @@ export function renderStack(options: {
   projectRoot: string;
   identity: WorkspaceIdentity;
   baseEnv?: Readonly<Record<string, string>>;
+  /** Selected physical lineage for a machine stack. */
+  physicalProjectName?: string;
+  /** Existing lineage ports retained during reconciliation. */
+  physicalPorts?: Readonly<Record<string, number>>;
 }): RenderedStack {
   const { spec, projectRoot, identity } = options;
   const portSpecs = effectivePortSpecs(spec);
@@ -64,10 +73,16 @@ export function renderStack(options: {
       files: definitionFiles.map((file) => file.contents),
       ports: portSpecs,
       env: composeEnv,
+      ...(Object.keys(spec.volumeDataVersions ?? {}).length > 0
+        ? { volumeDataVersions: spec.volumeDataVersions }
+        : {}),
     }),
   );
-  const stackId = stackIdFor(spec, identity, definitionHash);
-  const ports = resolveHostPorts(spec, identity, stackId, portSpecs);
+  const compatibilityId = stackIdFor(spec, identity, definitionHash);
+  const stackId = options.physicalProjectName ?? compatibilityId;
+  const ports = options.physicalPorts
+    ? { ...options.physicalPorts }
+    : resolveHostPorts(spec, identity, stackId, portSpecs);
   const projectDirectory =
     spec.scope === "workspace" ? projectRoot : homePaths.stack(stackId);
   const environment = {
@@ -98,6 +113,9 @@ export function renderStack(options: {
 
   return {
     stackId,
+    compatibilityId,
+    definitionHash,
+    volumeDataVersions: { ...(spec.volumeDataVersions ?? {}) },
     name: spec.name,
     scope: spec.scope,
     files,

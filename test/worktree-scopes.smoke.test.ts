@@ -259,6 +259,46 @@ export default {
       expect(linkedEnv.SMOKE_WORKSPACE_PORT).not.toBe(
         mainEnv.SMOKE_WORKSPACE_PORT,
       );
+
+      const upgradeConfig = fs
+        .readFileSync(
+          path.join(linkedRoot, "worktrellis.config.mjs"),
+          "utf8",
+        )
+        .replace(
+          '{ name: "machine", scope: "machine", files: ["compose.smoke.yml"], ports: port },',
+          '{ name: "machine", scope: "machine", files: ["compose.smoke.yml"], ports: port, env: { SMOKE_GENERATION: "two" } },',
+        );
+      fs.writeFileSync(
+        path.join(linkedRoot, "worktrellis.upgrade.config.mjs"),
+        upgradeConfig,
+      );
+      const upgradeContext = await buildContext({
+        cwd: linkedRoot,
+        configPath: "worktrellis.upgrade.config.mjs",
+      });
+      const upgradeCandidate = stackFor(
+        engine,
+        upgradeContext.config.compose[0]!,
+        upgradeContext.projectRoot,
+        upgradeContext.identity,
+        Object.fromEntries(upgradeContext.baseEnv),
+      );
+      cleanupStacks.set(upgradeCandidate.rendered.stackId, upgradeCandidate);
+      const upgraded = await prepareWorkspace({
+        cwd: linkedRoot,
+        configPath: "worktrellis.upgrade.config.mjs",
+        startServices: true,
+        allowNewMachineVariants: ["machine"],
+        urlPreference: "direct",
+        peekUrl: true,
+      });
+      expect(stack(upgraded, "machine").rendered.stackId).not.toBe(
+        stack(main, "machine").rendered.stackId,
+      );
+      expect(stack(upgraded, "machine").rendered.compatibilityId).toBe(
+        stack(upgraded, "machine").rendered.stackId,
+      );
     }, 300_000);
   },
 );

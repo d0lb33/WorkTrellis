@@ -322,11 +322,26 @@ narrowest scope that is correct.
 | `repository` | Every worktree of one repository should share a dependency | One Compose project per Git repository |
 | `workspace` | The service cannot safely isolate data internally | One Compose project per worktree |
 
-Machine stacks are shared only when their Compose files, named ports, and
-declared interpolation inputs match. When a worktree resolves a different
-compatibility identity while another variant is running, WorkTrellis warns
-before starting a second set of containers and volumes, and it names the
-environment keys to compare without printing their values.
+Machine stacks are shared only when their Compose files, named ports, declared
+interpolation inputs, and volume data generations match. When retained data
+exists under another compatibility identity, WorkTrellis requires an explicit
+choice: reconcile a proven-compatible lineage in place, or start a fresh
+variant. Non-interactive runs fail safely until that choice is supplied.
+
+For deliberate stateful upgrades, projects can declare opaque data-format
+generations by named Compose volume:
+
+```ts
+volumeDataVersions: {
+  postgres_data: "postgres-16",
+  redis_data: "redis-7",
+}
+```
+
+Keeping a generation asserts that the project has verified reuse is safe.
+Changing it creates a new lineage. Split services into separate machine stacks
+when they need independent upgrade lifecycles. See
+[machine-stack lineages](docs/machine-stack-lineages.md).
 
 ### Resource adapters
 
@@ -585,7 +600,7 @@ definitions, port overrides, locks, logs, and the workspace index live in
 ## Versioning and stability
 
 The npm package follows [Semantic Versioning](https://semver.org/).
-`configVersion` is a separate integer protocol, and WorkTrellis 0.3 accepts
+`configVersion` is a separate integer protocol, and WorkTrellis 0.4 accepts
 only `configVersion: 3`.
 
 - Additive configuration fields stay on the current version.

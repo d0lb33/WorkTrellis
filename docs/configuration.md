@@ -72,12 +72,10 @@ Available scopes:
 | `workspace` | Separate for every worktree |
 
 Machine compatibility includes project Compose contents, named port
-declarations, and resolved `compose[].env` values. If a worktree resolves a
-different compatibility identity while another variant is running,
-WorkTrellis warns before starting an additional set of containers and volumes.
-When the Compose files match, the warning lists the environment keys to compare
-without exposing their values. This commonly identifies `.env` differences
-when `compose[].env` callbacks read `baseEnv`.
+declarations, resolved `compose[].env` values, and declared volume data
+versions. If retained data exists under another identity, WorkTrellis prompts
+for an explicit reconcile-or-fresh choice. Non-interactive commands exit with a
+conflict before creating containers or volumes.
 
 Machine- and repository-scoped definitions run from their stable directory
 under `WORKTRELLIS_HOME`, so compatible worktrees do not fight over a project
@@ -100,6 +98,25 @@ compose: [{
 Then `${POSTGRES_PASSWORD}` works normally in the Compose file. Declared values
 participate in compatible stack identity without being written to generated
 files. A real process environment variable still has normal Compose precedence.
+
+Stateful services are conservative by default: in-place reconciliation requires
+the same mount topology, resolved image, command, entrypoint, and configured
+environment. A project can explicitly authorize compatible changes with named
+volume generations:
+
+```ts
+compose: [{
+  name: "infrastructure",
+  scope: "machine",
+  files: ["compose.yml"],
+  volumeDataVersions: {
+    postgres_data: "postgres-16",
+  },
+}]
+```
+
+Values are opaque project policy. Changing or removing a recorded generation
+requires a fresh lineage; WorkTrellis never performs a data-format migration.
 
 For each named port, `service` must match the merged Compose service name and
 `containerPort` is its internal listener. `hostPort` is optional; when omitted,
@@ -378,6 +395,6 @@ integer protocol:
 - a breaking interpretation requires a new version;
 - unsupported versions fail before infrastructure is changed.
 
-WorkTrellis 0.3 accepts only `configVersion: 3`. See the
+WorkTrellis 0.4 accepts only `configVersion: 3`. See the
 [v3 migration guide](migration-to-v3.md) for the credential and JSON-output
 changes.

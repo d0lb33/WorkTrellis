@@ -235,6 +235,21 @@ function validateCompose(stacks: ComposeStackSpec[], where: string): void {
         usageError(`${where}: invalid hostPort for "${stack.name}.${portName}".`);
       }
     }
+
+    for (const [volume, version] of Object.entries(
+      stack.volumeDataVersions ?? {},
+    )) {
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(volume)) {
+        usageError(
+          `${where}: volumeDataVersions key ${JSON.stringify(volume)} in stack "${stack.name}" is invalid.`,
+        );
+      }
+      if (typeof version !== "string" || version.trim() === "") {
+        usageError(
+          `${where}: volumeDataVersions.${volume} in stack "${stack.name}" must be a non-empty string.`,
+        );
+      }
+    }
   }
 }
 

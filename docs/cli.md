@@ -97,6 +97,9 @@ worktrellis services down [--volumes]
 worktrellis services restart
 worktrellis services status
 worktrellis services logs [stack] [--tail <n>] [--follow]
+worktrellis services variants [stack] [--json]
+worktrellis services reconcile <stack> --from <compose-project>
+worktrellis services down --variant <compose-project> [--volumes]
 worktrellis services adopt --postgres-port <port>
 worktrellis services adopt --local.postgres-port <port>
 ```
@@ -105,6 +108,12 @@ worktrellis services adopt --local.postgres-port <port>
 volumes unless `--volumes` is explicitly supplied. For machine- or
 repository-scoped stacks, that can affect other active worktrees. `logs`
 defaults to the first declared stack.
+
+`variants` lists selected and retained machine lineages without exposing secret
+values or host volume paths. `reconcile` preserves the selected physical
+project, host ports, and named volumes after verifying stateful compatibility
+and active consumers. Use `up --new-variant <stack>` to explicitly create fresh
+volumes instead. There is no force-reconcile option.
 
 `adopt` records a machine-local port override without changing project
 configuration. An unqualified name such as `postgres` applies wherever that
