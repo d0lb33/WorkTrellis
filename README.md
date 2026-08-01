@@ -283,12 +283,14 @@ npx skills add d0lb33/WorkTrellis --skill worktrellis --global --agent codex --y
 
 Then ask:
 
-> Use `$worktrellis` to configure this project for stable ports, isolated
-> local services, and safe concurrent worktrees.
+> Use `$worktrellis` to configure this project with stable ports, isolated
+> resources, and safe machine-stack lineages.
 
 The skill inspects the existing app, Compose files, package scripts, and
 environment contract before changing anything, and it keeps Compose, secrets,
-Portless, and Tailscale responsibilities in the right tools.
+Portless, and Tailscale responsibilities in the right tools. On WorkTrellis
+0.4 it also inspects retained variants before changing machine infrastructure,
+and requires an explicit reconcile-or-fresh lineage decision.
 
 </details>
 

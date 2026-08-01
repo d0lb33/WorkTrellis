@@ -19,6 +19,7 @@ worktrellis doctor
 worktrellis info
 worktrellis status
 worktrellis services status
+worktrellis services variants
 worktrellis env --explain
 ```
 
@@ -65,15 +66,40 @@ machine-local compatibility need. Prefer deterministic allocation.
 
 For a shared stack conflict:
 
-1. compare Compose file contents;
-2. compare declared named ports;
-3. compare the names of declared Compose environment inputs without exposing
-   values;
-4. look for relative bind mounts, builds, and `env_file`;
-5. confirm all callers use compatible package and config versions; and
-6. decide whether the stack should be workspace-scoped.
+1. run `worktrellis services variants <stack> --json`;
+2. distinguish the desired `compatibilityId` from each physical
+   `projectName`/`stackId`;
+3. compare Compose contents, named ports, and declared environment inputs
+   without exposing values;
+4. inspect stateful mount topology, resolved images, commands, entrypoints,
+   configured environment, and persisted `volumeDataVersions`;
+5. identify every live or unverifiable consumer;
+6. look for relative bind mounts, builds, and `env_file`;
+7. confirm all callers use WorkTrellis 0.4 or newer and compatible config; and
+8. decide whether to reconcile, create a fresh variant, or change scope.
 
 Do not silence compatibility warnings by weakening stack identity.
+
+Exit code `4` is an unresolved lineage decision, not a transient startup
+failure. In an interactive terminal, cancel is the default. In automation,
+choose explicitly:
+
+```bash
+worktrellis services reconcile <stack> --from <compose-project>
+worktrellis up --new-variant <stack>
+worktrellis services down --variant <compose-project>
+```
+
+Reconciliation is unavailable for anonymous volumes, unsafe bind or external
+mount differences, incompatible data versions, or live consumers. There is no
+force flag. Never choose a source by volume size or container recency, and
+never delete the unselected variant to make the conflict disappear. Adding
+`--volumes` is the only variant-data deletion path and requires explicit user
+authorization.
+
+If a legacy worktree is missing and its consumer cannot be verified, report it
+for manual cleanup. Do not clear the lease or signal a PID without verified
+process identity.
 
 If a service is unhealthy, diagnose it through Compose logs and the
 project-owned health check. WorkTrellis does not own container internals.
@@ -142,14 +168,15 @@ requires Portless, use `--portless` to turn fallback into a visible failure.
 If `--tailscale` fails:
 
 1. verify Node 24 or newer;
-2. verify the installed Portless version supports Tailscale;
+2. verify Portless 0.15.5 or newer is installed;
 3. verify Tailscale is connected and Portless setup works independently;
 4. inspect Portless output;
 5. confirm the app accepts the generated remote origin; and
 6. leave Tailscale commands and Serve cleanup to Portless.
 
 Do not add Tailscale API calls, Serve-state parsing, certificate copying, or
-remote URL derivation to WorkTrellis.
+remote URL derivation to WorkTrellis. WorkTrellis may record the exact URL
+returned by Portless and allow bounded cooperative wrapper cleanup.
 
 ## Resource isolation problems
 

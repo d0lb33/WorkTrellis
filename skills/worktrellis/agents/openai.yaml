@@ -1,4 +1,4 @@
 interface:
   display_name: "WorkTrellis"
-  short_description: "Set up isolated local worktree environments"
-  default_prompt: "Use $worktrellis to configure this project for stable ports and isolated local services."
+  short_description: "Isolate worktrees and preserve machine stacks"
+  default_prompt: "Use $worktrellis to configure this project with stable ports, isolated resources, and safe machine-stack lineages."

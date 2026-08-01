@@ -85,12 +85,28 @@ usually live in a workspace-scoped stack.
 Use `machine` only when the rendered definition is compatible across callers
 and independent of the current checkout. Machine stack identity includes
 Compose contents, named ports, and declared Compose environment inputs.
+WorkTrellis 0.4 separates that desired compatibility identity from the
+selected physical Compose project and its volumes. Before editing an existing
+machine stack, run `worktrellis services variants <stack> --json` and record
+the selected and retained lineages plus their consumers.
 
 Use `repository` when every worktree of one repository may share the same
 service, but an unrelated clone or project must not.
 
 Use `workspace` when each checkout needs its own container, build, bind mount,
 volume, or un-isolatable service state.
+
+For project-owned named volumes, declare `volumeDataVersions` only when the
+project can state the persisted data format, for example PostgreSQL 16 or a
+pinned MinIO generation. Matching values explicitly authorize compatible
+reuse across stateful image or configuration changes. Changing or removing a
+recorded value requires a fresh lineage. Adding one to a legacy stack does not
+override strict equivalence.
+
+Do not assign data versions to anonymous, bind, or external mounts to bypass
+strict comparison. Do not use reconciliation as a database upgrade mechanism.
+Split services into separate machine stacks when they need independent upgrade
+lifecycles.
 
 ### Transfer host-port ownership
 
@@ -231,6 +247,9 @@ lockfile.
 - Do not let a local package symlink hide a manifest or lockfile mismatch.
 - Do not convert every service into a WorkTrellis adapter.
 - Do not choose `machine` for relative builds or bind mounts.
+- Do not reconcile a machine lineage while it has live or unverifiable
+  consumers.
+- Do not delete retained variants merely because a newer lineage is selected.
 - Do not leave duplicate host port mappings in Compose.
 - Do not make Tailscale exposure the committed default.
 - Do not hard-code a branch name into an app hostname.

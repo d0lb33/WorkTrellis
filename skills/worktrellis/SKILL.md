@@ -1,6 +1,6 @@
 ---
 name: worktrellis
-description: Configure, adopt, validate, migrate, or troubleshoot WorkTrellis in a local development project. Use when an AI coding agent needs to give a Git checkout or linked worktrees stable ports and URLs, coordinate project-owned Docker or Podman Compose services, isolate PostgreSQL databases, Redis namespaces, or S3 buckets, generate per-worktree environment variables, supervise local app and worker processes, integrate optional Portless or Tailscale access, or diagnose WorkTrellis scope, environment, port, process, and orphan-cleanup problems.
+description: Configure, adopt, validate, migrate, or troubleshoot WorkTrellis in a local development project. Use when an AI coding agent needs to give Git checkouts stable ports and URLs, coordinate project-owned Docker or Podman Compose services, preserve and reconcile machine-stack data lineages, isolate PostgreSQL databases, Redis namespaces, or S3 buckets, generate per-worktree environment variables, supervise local app and worker processes, integrate optional Portless or Tailscale access, or diagnose WorkTrellis scope, retained variants, environment, port, process, and orphan-cleanup problems.
 ---
 
 # WorkTrellis
@@ -26,9 +26,13 @@ Inspect the project before editing it:
    setup. Compare the version declared in `package.json`, the lockfile
    resolution, the resolved package path and version, and
    `worktrellis --version`. Call out local links or symlinks that make the
-   checkout behave differently from a clean install.
+   checkout behave differently from a clean install. For an existing
+   machine-scoped stack on WorkTrellis 0.4 or newer, inspect
+   `worktrellis services variants <stack> --json` before changing its
+   definition.
 9. Verify Git, Node 22 or newer, and Docker or Podman Compose availability.
-   Portless-backed URLs and Tailscale sharing require Node 24 or newer.
+   Portless-backed URLs require Node 24 or newer. Tailscale sharing also
+   requires Portless 0.15.5 or newer.
 
 Read [setup-workflow.md](references/setup-workflow.md) before implementing a
 new adoption. Read [configuration.md](references/configuration.md) whenever
@@ -87,14 +91,34 @@ Create a small mapping:
 
 Choose the narrowest useful stack scope:
 
-- `machine`: reuse an identical, self-contained stack across compatible local
-  projects and worktrees.
+- `machine`: select one physical Compose/data lineage for compatible,
+  self-contained definitions across local projects and worktrees.
 - `repository`: share only among worktrees with the same Git common directory.
 - `workspace`: create a separate Compose project for the current working tree.
 
 Do not use a shared scope for relative bind mounts, relative build contexts, or
 relative `env_file` paths. Use `workspace`, or make the shared Compose
 definition self-contained.
+
+For every machine-scoped stack, distinguish the desired `compatibilityId` from
+the selected physical `projectName`/`stackId`. A definition change must never
+be treated as permission to create new volumes or abandon retained data.
+
+- Inspect retained lineages with `worktrellis services variants <stack>`.
+- Add `volumeDataVersions` for project-owned named persistence when the project
+  can assert its on-disk format. Equal values authorize reuse across otherwise
+  differing stateful definitions; changed or removed values require a fresh
+  lineage.
+- Use `worktrellis services reconcile <stack> --from <compose-project>` only
+  for a candidate WorkTrellis classifies as compatible and only after all live
+  consumers are stopped.
+- Use `worktrellis up --new-variant <stack>` for an intentional fresh-volume
+  lineage. Never delete the retained source as part of that choice.
+- Stop an unselected physical lineage only with
+  `worktrellis services down --variant <compose-project>`. Omit `--volumes`
+  unless the user explicitly authorizes permanent data deletion.
+- Never copy, merge, upgrade, dump, restore, or delete application data on
+  WorkTrellis's behalf. Those remain explicit project-owned operations.
 
 ### 2. Install and commit the contract
 
@@ -159,6 +183,7 @@ Prefer these package-script roles:
     "dev:app": "worktrellis up --only app",
     "services:up": "worktrellis services up",
     "services:status": "worktrellis services status",
+    "services:variants": "worktrellis services variants",
     "worktrellis:doctor": "worktrellis doctor",
     "worktrellis:env": "worktrellis env --explain"
   }
@@ -182,6 +207,7 @@ worktrellis doctor
 worktrellis info
 worktrellis env --explain
 worktrellis services status
+worktrellis services variants
 worktrellis up
 worktrellis status
 worktrellis down
@@ -218,7 +244,8 @@ worktrellis up --tailscale
 
 Do not derive a Tailscale URL, change Serve state directly, install
 certificates, or duplicate Portless routing logic. WorkTrellis supplies the
-name and app port; Portless owns remote sharing and cleanup.
+name and app port, records the exact provider-returned URL for live status, and
+supervises cleanup; Portless owns remote allocation, sharing, and routes.
 
 ## Change or migrate safely
 
@@ -233,6 +260,14 @@ name and app port; Portless owns remote sharing and cleanup.
 6. Run the existing project tests plus WorkTrellis diagnostics.
 7. Revalidate concurrent worktrees when identity, naming, ports, Compose
    scopes, resources, generated environment, or cleanup behavior changes.
+8. Before changing a machine stack, inspect all retained variants and verified
+   consumers. If `up` exits with code `4`, do not retry around the conflict:
+   explicitly choose a safe reconciliation source, a fresh variant, or cancel.
+
+Interactive lineage conflicts default to cancel. Non-interactive automation
+must supply `--new-variant <stack>` or run an explicit compatible
+`services reconcile`; never infer the choice from recency, size, or a familiar
+container name.
 
 Do not bump WorkTrellis itself while adopting it in another project unless the
 user explicitly requests a package upgrade.
@@ -243,6 +278,8 @@ Summarize:
 
 - files changed;
 - stack scopes and why they were chosen;
+- selected physical machine lineages, retained variants, compatibility, and
+  live or unverifiable consumers;
 - isolated resources and generated environment keys;
 - the normal local URL and direct-mode behavior;
 - the explicit Tailscale command, if configured;

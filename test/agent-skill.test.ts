@@ -42,6 +42,21 @@ describe("WorkTrellis agent skill", () => {
     expect(metadata).toContain("$worktrellis");
   });
 
+  it("teaches safe machine-stack lineage decisions", async () => {
+    const skill = await read("SKILL.md");
+    const configuration = await read("references/configuration.md");
+    const troubleshooting = await read("references/troubleshooting.md");
+
+    expect(skill).toContain("services variants <stack>");
+    expect(skill).toContain("services reconcile <stack> --from <compose-project>");
+    expect(skill).toContain("--new-variant <stack>");
+    expect(skill).toContain("exits with code `4`");
+    expect(skill).toContain("services down --variant <compose-project>");
+    expect(configuration).toContain("volumeDataVersions");
+    expect(troubleshooting).toMatch(/There is no\s+force flag/);
+    expect(troubleshooting).toContain("never delete the unselected variant");
+  });
+
   it("documents a copyable skills CLI installation command", async () => {
     const readme = await readFile(resolve(root, "README.md"), "utf8");
 

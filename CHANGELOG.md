@@ -5,6 +5,12 @@ All notable changes to WorkTrellis are documented here. The project follows
 
 ## Unreleased
 
+### Changed
+
+- The installable WorkTrellis AI skill now covers machine-stack variant
+  discovery, data-version declarations, consumer-safe reconciliation, explicit
+  fresh lineages, targeted variant shutdown, and exit-code-4 conflicts.
+
 ## 0.4.1 - 2026-08-01
 
 ### Fixed

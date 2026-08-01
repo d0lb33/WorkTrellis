@@ -76,6 +76,10 @@ compose: [
     name: "infrastructure",
     scope: "machine",
     files: ["compose.worktrellis.yml"],
+    volumeDataVersions: {
+      postgres_data: "postgres-16",
+      redis_data: "redis-7",
+    },
     env: {
       POSTGRES_USER: ({ baseEnv }) =>
         requiredEnv(baseEnv, "POSTGRES_USER"),
@@ -114,6 +118,16 @@ an external tool truly requires it and accept the collision risk.
 
 WorkTrellis publishes declared ports on loopback. Remove corresponding host
 port mappings from the project Compose files.
+
+`volumeDataVersions` is keyed by the project-owned Compose volume name, not the
+engine-prefixed physical volume name. Use it only for named volumes whose data
+format the project understands. Equal persisted values authorize reuse when a
+stateful signature differs; a changed or removed value requires a fresh
+variant. Bind and external mounts always require strict equivalence, and
+anonymous volumes cannot be reconciled.
+
+This additive field does not replace Compose migrations or data upgrades.
+WorkTrellis never copies, merges, or deletes volume contents.
 
 ## Built-in resources
 
@@ -278,6 +292,9 @@ port, path, and `.localhost`.
 
 Set `tailscale: true` only as a personal opt-in. Prefer leaving it false and
 running `worktrellis up --tailscale` for a temporary private share.
+Use Portless 0.15.5 or newer. Read the exact live private URL from Portless
+output or `worktrellis status`; concurrent shares may receive `:8443` or
+another dynamic HTTPS port.
 
 ## Custom adapters
 

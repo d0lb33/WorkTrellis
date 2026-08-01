@@ -6,6 +6,7 @@
 - Static checks
 - Read-only diagnostics
 - Runtime validation
+- Machine-lineage validation
 - Two-worktree validation
 - Phone-access validation
 - Completion evidence
@@ -49,6 +50,7 @@ worktrellis doctor
 worktrellis info
 worktrellis env --explain
 worktrellis services status
+worktrellis services variants
 worktrellis status
 ```
 
@@ -67,6 +69,11 @@ Confirm:
 - no critical generated value is shadowed by `.env`;
 - required tools and daemons are reachable; and
 - stopped, running, or orphaned state is truthful.
+
+For every machine-scoped stack, confirm the selected physical lineage,
+compatibility identity, retained variants, safe volume names, and verified
+consumers. Read-only commands must not rewrite definitions or start, stop, or
+repoint infrastructure.
 
 ## Runtime validation
 
@@ -106,10 +113,23 @@ worktrellis down
 The app must honor the deterministic direct host and port.
 
 Before stopping a machine- or repository-scoped stack, enumerate known
-worktrees with `worktrellis list --project <project>` and inspect
-`worktrellis services status`. Check the status of candidate active worktrees
-before proceeding. There is no safe assumption that the current checkout is
-the only consumer.
+worktrees with `worktrellis list --project <project>`, inspect
+`worktrellis services status`, and run
+`worktrellis services variants <stack>`. Check every verified consumer before
+proceeding. There is no safe assumption that the current checkout is the only
+consumer.
+
+When validating a machine-definition change:
+
+1. Preserve sentinel data or create a project-owned verified backup when the
+   user authorized it.
+2. Confirm non-interactive unresolved conflicts exit with code `4` before new
+   stack files, ports, containers, or volumes are created.
+3. Reconcile only a reported compatible candidate with
+   `worktrellis services reconcile <stack> --from <compose-project>`.
+4. Use `--new-variant <stack>` to test intentional isolation.
+5. Confirm old volume IDs and sentinel data survive reconciliation or fresh
+   selection, and that no variant is implicitly removed.
 
 ## Two-worktree validation
 
@@ -131,7 +151,9 @@ Assert:
 - workspace fingerprints, slugs, app ports, and URLs differ;
 - workspace-scoped Compose project names differ;
 - repository-scoped project names match only inside the same repository;
-- compatible machine-scoped project names match;
+- compatible worktrees select the same physical machine lineage;
+- an intentional fresh variant selects a different physical lineage while the
+  retained lineage and its volumes remain discoverable;
 - PostgreSQL database names differ;
 - Redis prefixes differ, and logical databases follow configured behavior;
 - S3 bucket names differ; and
@@ -150,7 +172,8 @@ Tailscale and Portless setup:
 worktrellis up --tailscale
 ```
 
-Use the URL printed by Portless. Verify the phone is on the same tailnet and
+Use Portless 0.15.5 or newer and the exact URL printed by Portless or reported
+as `tailnet` by `worktrellis status`. Verify the phone is on the same tailnet and
 the application accepts the remote origin. Authentication systems may require
 their public/base URL and trusted-origin settings to derive from
 WorkTrellis-provided URL values.

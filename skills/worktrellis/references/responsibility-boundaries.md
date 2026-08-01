@@ -5,6 +5,7 @@
 - Ownership matrix
 - Decision tests
 - URL and Tailscale boundary
+- Machine lineage boundary
 - Adapter boundary
 - Environment boundary
 - Lifecycle boundary
@@ -16,6 +17,7 @@
 | Git repository and worktree identity | WorkTrellis |
 | Deterministic app and named host ports | WorkTrellis |
 | Machine, repository, and workspace scope | WorkTrellis |
+| Machine compatibility identity and physical lineage selection | WorkTrellis |
 | Logical database, namespace, or bucket isolation | WorkTrellis adapters |
 | Generated per-worktree environment | WorkTrellis |
 | Foreground local process supervision | WorkTrellis |
@@ -24,6 +26,7 @@
 | Package scripts and task pipelines | Project |
 | Schema migrations and seeds | Project hooks and tools |
 | Dump acquisition, sanitation, and restore logic | Project |
+| Application data migration, merge, copy, and upgrade policy | Project |
 | Secrets | Developer, environment, or secret manager |
 | Local hostnames, proxy, routes, certificates | Portless |
 | Tailscale Serve and remote URL | Portless |
@@ -66,6 +69,18 @@ WorkTrellis must not:
 - create its own proxy or tunnel.
 
 Tailscale is a Portless mode, not a third WorkTrellis routing subsystem.
+
+## Machine lineage boundary
+
+WorkTrellis may discover retained machine-stack variants, compare stateful
+definitions, verify consumers, select a physical Compose project, retain its
+ports and volumes, and coordinate rollback of generated definitions.
+
+WorkTrellis must not inspect application data, infer compatibility from volume
+size or age, run database upgrades, merge or copy data between variants, or
+delete an unselected lineage implicitly. `--volumes` remains the only explicit
+volume-removal path. Projects own `volumeDataVersions` assertions and all
+backup, restore, and migration procedures.
 
 ## Adapter boundary
 
