@@ -501,6 +501,12 @@ pnpm exec worktrellis up --tailscale
 Because sharing is explicit, the launch fails rather than quietly falling back
 to a loopback-only URL when Portless sharing cannot start.
 
+Use Portless 0.15.5 or newer for reliable HTTP/2 WebSocket and development HMR
+support. Portless may allocate `:8443` or another HTTPS port when multiple apps
+are shared, and that allocation can change after restarts. Use the private URL
+printed at startup or shown as `tailnet` by `worktrellis status`, rather than
+treating the bare tailnet node URL as a stable project URL.
+
 > **Delegation boundary.** WorkTrellis supplies only a worktree-safe name and a
 > deterministic app port. Portless owns proxy startup, route registration and
 > conflicts, certificates and trust, framework binding, Tailscale Serve, remote

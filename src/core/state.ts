@@ -80,6 +80,8 @@ export function workspacePaths(worktreeRoot: string, workspaceKey?: string) {
 export interface LiveRunState {
   pid: number;
   startedAt: string;
+  /** Bounded time the provider wrapper may need for cooperative cleanup. */
+  cooperativeShutdownGraceMs?: number;
   url: {
     mode: "portless" | "direct";
     appUrl: string;
@@ -90,6 +92,7 @@ export interface LiveRunState {
     listenHost: string;
     listenPort: number;
     providerEnv: Record<string, string>;
+    sharingUrl?: string;
   };
 }
 

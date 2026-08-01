@@ -35,6 +35,9 @@ writes `.worktrellis/env`, and supervises configured processes.
 
 An explicit `--tailscale` request fails if Portless sharing cannot be started;
 it never silently falls back to a loopback-only URL.
+Portless chooses the private HTTPS port dynamically when multiple apps are
+shared. The exact provider-returned URL is retained for the live run and shown
+by `worktrellis status`.
 
 ### `worktrellis down`
 
@@ -52,6 +55,8 @@ Reports the worktree URL, supervised-process state, Compose health, and
 resolved resource names. If the supervisor is gone while a recorded child or
 application listener remains, status reports `orphaned` and exits with a
 failing status instead of describing the workspace as stopped.
+For a live Tailscale-backed run, human output includes `tailnet` and JSON output
+includes `url.sharingUrl`.
 Supports `--json`. Structured status omits the worktree root and provider
 environment, reports resources as safe descriptions, and redacts credentials
 from diagnostic details.

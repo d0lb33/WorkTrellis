@@ -95,7 +95,12 @@ export async function runDown(options: CommonOptions): Promise<number> {
     info(`  requesting graceful shutdown ${c.gray(`pid ${supervisorPid}`)}`);
     requestGracefulShutdown(context.paths.stop, originalRecord!);
 
-    const graceful = await waitForProcessExit(supervisorPid);
+    const graceful = await waitForProcessExit(supervisorPid, {
+      timeoutMs:
+        (live?.cooperativeShutdownGraceMs ??
+          originalRecord?.cooperativeShutdownGraceMs ??
+          3_000) + 5_000,
+    });
     if (!graceful) {
       warn(
         `supervisor pid ${supervisorPid} did not stop gracefully; forcing shutdown`,
@@ -105,7 +110,12 @@ export async function runDown(options: CommonOptions): Promise<number> {
     }
   }
 
-  const reaped = await reapOrphans(context.paths.run, { clearRecord: false });
+  const reaped = await reapOrphans(context.paths.run, {
+    clearRecord: false,
+    graceMs:
+      live?.cooperativeShutdownGraceMs ??
+      originalRecord?.cooperativeShutdownGraceMs,
+  });
   for (const stopped of reaped.stopped) {
     info(
       `  ${stopped.forced ? "force-stopped" : "stopped"} ${stopped.name} ${c.gray(`pid ${stopped.pid}`)}`,
@@ -236,6 +246,9 @@ export async function runStatus(options: CommonOptions): Promise<number> {
         ? c.cyan(url.url.appUrl)
         : c.gray(`${url.url.appUrl} (when started)`),
     ],
+    ...(url.url.sharingUrl
+      ? ([["tailnet", c.cyan(url.url.sharingUrl)]] as Array<[string, string]>)
+      : []),
     ...describeResources(
       context.config.resources,
       envContext.resources,
@@ -320,6 +333,7 @@ export function buildStatusJson(input: {
     wildcardOrigins: input.url.wildcardOrigins,
     listenHost: input.url.listenHost,
     listenPort: input.url.listenPort,
+    ...(input.url.sharingUrl ? { sharingUrl: input.url.sharingUrl } : {}),
     ...(input.url.fallbackReason
       ? {
           fallbackReason: redactDiagnosticText(

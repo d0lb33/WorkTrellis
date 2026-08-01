@@ -53,6 +53,10 @@ export interface SupervisorOptions {
   prefix?: boolean;
   /** Stream this process's output untouched, for tools with live redraws. */
   raw?: string;
+  /** Maximum cooperative cleanup window before owned processes are killed. */
+  cooperativeShutdownGraceMs?: number;
+  /** Observe already-sanitized child output without taking over supervision. */
+  onOutputLine?: (event: { process: string; line: string }) => void;
 }
 
 const RESTART_WINDOW_MS = 60_000;
@@ -343,6 +347,12 @@ export class Supervisor {
 
     this.log(entry, `${safeLine}\n`);
 
+    try {
+      this.options.onOutputLine?.({ process: entry.spec.name, line: safeLine });
+    } catch {
+      // Diagnostics and provider metadata must never break process supervision.
+    }
+
     if (this.checkReady(entry, safeLine)) {
       entry.state = "ready";
     }
@@ -466,8 +476,16 @@ export class Supervisor {
       if (entry.pid) requestCooperativeTreeShutdown(entry.pid);
     }
 
-    // Give them a moment to exit on their own, then insist.
-    await new Promise((resolve) => setTimeout(resolve, live.length > 0 ? 3_000 : 0));
+    // Give wrappers time to finish their own cleanup, returning as soon as
+    // they do instead of holding the supervisor open for the full window.
+    const deadline =
+      Date.now() + (this.options.cooperativeShutdownGraceMs ?? 3_000);
+    while (
+      [...this.processes.values()].some((entry) => entry.pid !== null) &&
+      Date.now() < deadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
 
     for (const entry of this.processes.values()) {
       if (entry.pid) killTree(entry.pid, "SIGKILL");
@@ -509,6 +527,12 @@ export class Supervisor {
       slug: this.options.identity.slug,
       worktreeRoot: this.options.identity.root,
       aliases: this.options.aliases,
+      ...(this.options.cooperativeShutdownGraceMs !== undefined
+        ? {
+            cooperativeShutdownGraceMs:
+              this.options.cooperativeShutdownGraceMs,
+          }
+        : {}),
       children,
     };
 

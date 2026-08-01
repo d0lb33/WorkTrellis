@@ -205,6 +205,8 @@ export interface UrlContext {
   listenHost: string;
   listenPort: number;
   providerEnv: Record<string, string>;
+  /** Provider-returned private/public sharing URL for the live run, if any. */
+  sharingUrl?: string;
   fallbackReason?: string;
 }
 

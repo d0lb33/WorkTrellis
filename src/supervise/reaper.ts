@@ -34,6 +34,8 @@ export interface RunRecord {
   worktreeRoot: string;
   /** Hostnames registered with a URL provider, to release on cleanup. */
   aliases: string[];
+  /** Bounded time a provider wrapper may need for cooperative cleanup. */
+  cooperativeShutdownGraceMs?: number;
   children: RunChild[];
 }
 
@@ -72,10 +74,11 @@ export async function reapOrphans(
   options: { clearRecord?: boolean; graceMs?: number } = {},
 ): Promise<ReapResult> {
   const clearRecord = options.clearRecord ?? true;
-  const graceMs = options.graceMs ?? 3_000;
   const record = readRunRecord(runFile);
   const result: ReapResult = { stopped: [], blocked: [], aliases: [] };
   if (!record) return result;
+  const graceMs =
+    options.graceMs ?? record.cooperativeShutdownGraceMs ?? 3_000;
 
   result.aliases = record.aliases ?? [];
 

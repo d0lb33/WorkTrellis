@@ -358,15 +358,18 @@ through Portless, which owns proxy startup, local route registration, framework
 adaptation, and cleanup. `--tailscale` additionally selects Portless's native
 private-sharing mode. WorkTrellis supplies only the name and fixed app port
 because it owns worktree identity and process supervision. It does not invoke
-Tailscale, inspect Serve state, choose the remote port, derive the remote URL,
-or clean up either route.
+Tailscale, inspect Serve state, choose the remote port, or clean up either
+route. It only records the exact private URL Portless returns for the live run.
 
 Portless prints the private URL and supplies `PORTLESS_TAILSCALE_URL` to the
 wrapped app. Its normal rules apply, including use of additional HTTPS ports
-when another shared app already occupies port 443. This mode requires the
-Portless provider, Node 24 or newer, and a working Portless Tailscale setup.
-Because sharing is explicit, WorkTrellis fails the launch if those
-prerequisites are unavailable instead of falling back to a local-only URL.
+when another shared app already occupies port 443. Those allocations can
+change as shared apps stop and restart, so use the URL Portless prints or the
+`tailnet` value in `worktrellis status`; the bare tailnet node URL is not a
+stable project identifier. This mode requires Portless 0.15.5 or newer, Node 24
+or newer, and a working Portless Tailscale setup. Because sharing is explicit,
+WorkTrellis fails the launch if those prerequisites are unavailable instead of
+falling back to a local-only URL.
 
 To make exposure the default for only one ignored worktree, use:
 
@@ -384,7 +387,10 @@ app exits. If WorkTrellis discovers an orphan after its supervisor has already
 stopped, it still gives the verified wrapper a cooperative cleanup window
 before using a forceful process-tree kill. On POSIX systems that means
 signalling the wrapper; on Windows, WorkTrellis stops the wrapper's owned
-application tree so Portless can observe the exit and clean up naturally.
+application tree so Portless can observe the exit and clean up naturally. A
+Tailscale-backed wrapper receives a longer bounded window because Portless's
+public CLI may wait for Tailscale cleanup; WorkTrellis never inspects or edits
+Serve state itself.
 
 ## Configuration compatibility
 

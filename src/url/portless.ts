@@ -20,6 +20,7 @@ export interface PortlessProbe {
   available: boolean;
   reason?: string;
   binary?: string;
+  version?: string;
 }
 
 export function findPortlessBinary(projectRoot: string): string | null {
@@ -54,7 +55,35 @@ export function probePortless(projectRoot: string): PortlessProbe {
     };
   }
 
-  return { available: true, binary };
+  let version: string | undefined;
+  try {
+    const manifest = JSON.parse(
+      fs.readFileSync(
+        path.join(projectRoot, "node_modules", "portless", "package.json"),
+        "utf8",
+      ),
+    ) as { version?: unknown };
+    if (typeof manifest.version === "string") version = manifest.version;
+  } catch {
+    // The executable probe remains authoritative for ordinary local routing.
+  }
+
+  return { available: true, binary, version };
+}
+
+export function supportsReliablePortlessTailscale(
+  version: string | undefined,
+): boolean {
+  if (!version) return false;
+  const match = /^(\d+)\.(\d+)\.(\d+)(.*)$/.exec(version);
+  if (!match) return false;
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  const patch = Number(match[3]);
+  if (major !== 0) return major > 0;
+  if (minor !== 15) return minor > 15;
+  if (patch !== 5) return patch > 5;
+  return !match[4]!.startsWith("-");
 }
 
 async function portless(
@@ -117,6 +146,33 @@ export interface PortlessAppRunner {
   aliasName: string;
   listenPort: number;
   tailscale: boolean;
+  /** Allow Portless's own Tailscale CLI cleanup to finish before force-kill. */
+  cooperativeShutdownGraceMs?: number;
+}
+
+export const PORTLESS_TAILSCALE_CLEANUP_GRACE_MS = 35_000;
+
+/** Parse the provider-returned URL from Portless's documented CLI output. */
+export function parsePortlessSharingUrl(line: string): string | null {
+  const plain = line.replace(/\u001b\[[0-9;]*m/g, "");
+  const match = /^\s*Tailscale\s*->\s*(https:\/\/\S+)\s*$/i.exec(plain);
+  if (!match?.[1]) return null;
+  try {
+    const parsed = new URL(match[1]);
+    if (
+      parsed.protocol !== "https:" ||
+      parsed.username ||
+      parsed.password ||
+      parsed.pathname !== "/" ||
+      parsed.search ||
+      parsed.hash
+    ) {
+      return null;
+    }
+    return parsed.origin;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -197,6 +253,12 @@ export async function resolvePortlessUrl(
   if (!probe.available || !probe.binary) {
     return { failed: true, reason: probe.reason ?? "portless is unavailable" };
   }
+  if (options.tailscale && !supportsReliablePortlessTailscale(probe.version)) {
+    return {
+      failed: true,
+      reason: `Portless 0.15.5 or newer is required for reliable tailnet WebSocket support (found ${probe.version ?? "an unknown version"})`,
+    };
+  }
 
   const proxy = await ensurePortlessProxy(
     probe.binary,
@@ -269,6 +331,12 @@ export async function resolvePortlessUrl(
       aliasName,
       listenPort,
       tailscale: options.tailscale ?? false,
+      ...(options.tailscale
+        ? {
+            cooperativeShutdownGraceMs:
+              PORTLESS_TAILSCALE_CLEANUP_GRACE_MS,
+          }
+        : {}),
     },
     release: async () => {
       // Portless removes its process-backed route when the wrapped app exits.

@@ -12,6 +12,7 @@ import { clearRunRecord } from "../supervise/reaper";
 import { c, heading, info, step, table, warn } from "../util/log";
 import type { UrlPreference } from "../url/provider";
 import {
+  parsePortlessSharingUrl,
   wrapCommandForPortless,
   type PortlessAppRunner,
 } from "../url/portless";
@@ -259,6 +260,7 @@ export async function runUp(options: UpOptions): Promise<number> {
   ]);
   info("");
 
+  const liveUrl = { ...url.url };
   const supervisor = new Supervisor({
     projectRoot: context.projectRoot,
     env: env.combined,
@@ -276,6 +278,25 @@ export async function runUp(options: UpOptions): Promise<number> {
     aliases: [],
     prefix: options.prefix,
     raw: options.raw,
+    cooperativeShutdownGraceMs:
+      portlessRunner?.cooperativeShutdownGraceMs,
+    onOutputLine: ({ line }) => {
+      if (!portlessRunner?.tailscale) return;
+      const sharingUrl = parsePortlessSharingUrl(line);
+      if (!sharingUrl || liveUrl.sharingUrl === sharingUrl) return;
+      liveUrl.sharingUrl = sharingUrl;
+      writeLiveRunState(context.paths.state, {
+        pid: process.pid,
+        startedAt: new Date(supervisor.supervisorStartedAt).toISOString(),
+        ...(portlessRunner?.cooperativeShutdownGraceMs !== undefined
+          ? {
+              cooperativeShutdownGraceMs:
+                portlessRunner.cooperativeShutdownGraceMs,
+            }
+          : {}),
+        url: liveUrl,
+      });
+    },
   });
 
   selected.forEach((spec, index) => supervisor.add(spec, index));
@@ -286,7 +307,13 @@ export async function runUp(options: UpOptions): Promise<number> {
   writeLiveRunState(context.paths.state, {
     pid: process.pid,
     startedAt: new Date(supervisor.supervisorStartedAt).toISOString(),
-    url: url.url,
+    ...(portlessRunner?.cooperativeShutdownGraceMs !== undefined
+      ? {
+          cooperativeShutdownGraceMs:
+            portlessRunner.cooperativeShutdownGraceMs,
+        }
+      : {}),
+    url: liveUrl,
   });
   writeMachineRunLease({
     version: 1,

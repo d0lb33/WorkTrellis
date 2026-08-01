@@ -48,6 +48,9 @@ import {
 import { isProcessAlive, killTree } from "../src/util/proc";
 import { resolveUrl } from "../src/url/provider";
 import {
+  parsePortlessSharingUrl,
+  PORTLESS_TAILSCALE_CLEANUP_GRACE_MS,
+  supportsReliablePortlessTailscale,
   wrapCommandForPortless,
 } from "../src/url/portless";
 import type {
@@ -178,6 +181,7 @@ describe("WorkTrellis diagnostic JSON", () => {
         wildcardOrigins: ["https://*.test.localhost"],
         listenHost: "127.0.0.1",
         listenPort: 3210,
+        sharingUrl: "https://node.example.ts.net:8443",
         fallbackReason: `proxy rejected token ${secret}`,
         providerEnv: {
           NODE_EXTRA_CA_CERTS: "/private/portless/ca.pem",
@@ -208,6 +212,7 @@ describe("WorkTrellis diagnostic JSON", () => {
 
     expect(serialized).not.toContain(secret);
     expect(serialized).not.toContain("/private/worktree/path");
+    expect(result.url.sharingUrl).toBe("https://node.example.ts.net:8443");
     expect(serialized).not.toContain("NODE_EXTRA_CA_CERTS");
     expect(serialized).not.toContain("/private/portless/ca.pem");
     expect(result.url.fallbackReason).toBe("proxy rejected token ***");
@@ -1097,6 +1102,34 @@ describe("WorkTrellis runtime status", () => {
 });
 
 describe("WorkTrellis Portless process delegation", () => {
+  it("captures the exact dynamic private URL returned by Portless", () => {
+    expect(
+      parsePortlessSharingUrl(
+        "\u001b[32m  Tailscale -> https://node.example.ts.net:8443\u001b[39m",
+      ),
+    ).toBe("https://node.example.ts.net:8443");
+    expect(parsePortlessSharingUrl("  -> https://app.localhost")).toBeNull();
+    expect(parsePortlessSharingUrl("Tailscale -> not-a-url")).toBeNull();
+    expect(
+      parsePortlessSharingUrl(
+        "Tailscale -> https://user:secret@node.example.ts.net:8443",
+      ),
+    ).toBeNull();
+  });
+
+  it("allows Portless's bounded Tailscale cleanup to finish", () => {
+    expect(PORTLESS_TAILSCALE_CLEANUP_GRACE_MS).toBeGreaterThan(30_000);
+  });
+
+  it("requires the Portless WebSocket fix for private sharing", () => {
+    expect(supportsReliablePortlessTailscale("0.15.4")).toBe(false);
+    expect(supportsReliablePortlessTailscale("0.15.5-beta.1")).toBe(false);
+    expect(supportsReliablePortlessTailscale("0.15.5")).toBe(true);
+    expect(supportsReliablePortlessTailscale("0.16.0-beta.1")).toBe(true);
+    expect(supportsReliablePortlessTailscale("1.0.0")).toBe(true);
+    expect(supportsReliablePortlessTailscale(undefined)).toBe(false);
+  });
+
   it("requires the app-port process for a private-sharing launch", () => {
     expect(
       includesAppPortProcess([

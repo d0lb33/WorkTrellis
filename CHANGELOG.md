@@ -5,6 +5,18 @@ All notable changes to WorkTrellis are documented here. The project follows
 
 ## Unreleased
 
+## 0.4.1 - 2026-08-01
+
+### Fixed
+
+- Tailscale-backed Portless wrappers now receive a bounded cooperative cleanup
+  window long enough for Portless's public CLI to unregister its Serve route,
+  avoiding stale allocations without WorkTrellis inspecting Tailscale state.
+- Live status now records and reports the exact private URL returned by
+  Portless, including dynamically allocated HTTPS ports for concurrent apps.
+- Private sharing now requires Portless 0.15.5 or newer so HTTP/2 WebSocket
+  traffic used by development HMR is proxied reliably.
+
 ## 0.4.0 - 2026-08-01
 
 ### Breaking
