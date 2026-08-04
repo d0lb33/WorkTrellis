@@ -9,11 +9,7 @@ import { redactDiagnosticText } from "../core/env-resolve";
 import { ensureDirectory } from "../util/fs";
 import { c, info, NAMED_COLORS, PROCESS_COLORS, type Colorize } from "../util/log";
 import { canConnect } from "../platform/ports";
-import {
-  IS_WINDOWS,
-  killTree,
-  requestCooperativeTreeShutdown,
-} from "../util/proc";
+import { killTree, requestCooperativeTreeShutdown } from "../util/proc";
 import { writeRunRecord, type RunChild, type RunRecord } from "./reaper";
 import {
   clearShutdownRequest,
@@ -72,6 +68,14 @@ export function sanitizeMultiplexedOutput(value: string): string {
   return value
     .replace(/\u001bc/g, "")
     .replace(/\u001b\[(?:[0-9;?]*[HJf]|[0-9;]*[JK])/g, "");
+}
+
+/** Keep Windows wrappers out of Git Bash's console-wide Ctrl+C broadcast. */
+export function supervisedProcessIsolation(): {
+  detached: true;
+  windowsHide: true;
+} {
+  return { detached: true, windowsHide: true };
 }
 
 function resolveCommand(
@@ -267,11 +271,10 @@ export class Supervisor {
       cwd: this.options.projectRoot,
       env,
       stdio: ["ignore", "pipe", "pipe"],
-      // On POSIX this makes the child a process-group leader so the whole tree
-      // can be signalled at once. On Windows it would open a new console
-      // window, and taskkill /T walks the tree anyway.
-      detached: !IS_WINDOWS,
-      windowsHide: true,
+      // POSIX uses the new process group for tree signals. Windows uses a
+      // hidden, separate console so Git Bash's console-wide Ctrl+C reaches the
+      // WorkTrellis supervisor but not every nested wrapper independently.
+      ...supervisedProcessIsolation(),
     });
 
     entry.child = child;

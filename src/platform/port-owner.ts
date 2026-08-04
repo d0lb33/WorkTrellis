@@ -1,6 +1,10 @@
 import { spawnSync } from "node:child_process";
 
-import { IS_WINDOWS, run } from "../util/proc";
+import {
+  IS_WINDOWS,
+  resolveWindowsSystemExecutable,
+  run,
+} from "../util/proc";
 import type { ContainerEngine } from "./engine";
 import { isPortAvailable } from "./ports";
 
@@ -68,11 +72,15 @@ function foreignHolder(
   protocol: "tcp" | "udp",
 ): PortOwner {
   if (IS_WINDOWS) {
-    const netstat = spawnSync("netstat", ["-ano", "-p", protocol], {
-      encoding: "utf8",
-      windowsHide: true,
-      timeout: 15_000,
-    });
+    const netstat = spawnSync(
+      resolveWindowsSystemExecutable("netstat.exe"),
+      ["-ano", "-p", protocol],
+      {
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 15_000,
+      },
+    );
     if (netstat.status !== 0 || !netstat.stdout) return { kind: "unknown" };
 
     for (const line of netstat.stdout.split(/\r?\n/)) {
@@ -86,7 +94,7 @@ function foreignHolder(
 
       // tasklist is far cheaper than starting PowerShell just for an image name.
       const tasklist = spawnSync(
-        "tasklist",
+        resolveWindowsSystemExecutable("tasklist.exe"),
         ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"],
         { encoding: "utf8", windowsHide: true, timeout: 15_000 },
       );

@@ -132,10 +132,14 @@ export function killTree(
     const force = signal === "SIGKILL";
     const args = ["/pid", String(pid), "/T"];
     if (force) args.push("/F");
-    const result = spawnSync(windowsSystemExecutable("taskkill.exe"), args, {
-      stdio: "ignore",
-      windowsHide: true,
-    });
+    const result = spawnSync(
+      resolveWindowsSystemExecutable("taskkill.exe"),
+      args,
+      {
+        stdio: "ignore",
+        windowsHide: true,
+      },
+    );
     return result.status === 0;
   }
 
@@ -192,7 +196,7 @@ function signalProcessOrGroup(pid: number, signal: NodeJS.Signals): boolean {
   }
 }
 
-function windowsSystemExecutable(name: string): string {
+export function resolveWindowsSystemExecutable(name: string): string {
   const systemRoot = process.env.SystemRoot?.trim();
   if (!systemRoot) return name;
   const candidate = path.join(systemRoot, "System32", name);
@@ -365,8 +369,22 @@ export function listeningProcessIds(port: number): number[] {
   if (!Number.isInteger(port) || port <= 0 || port > 65_535) return [];
 
   if (IS_WINDOWS) {
+    const powershell = spawnSync(
+      windowsPowerShellExecutable(),
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique`,
+      ],
+      { encoding: "utf8", windowsHide: true, timeout: 15_000 },
+    );
+    if (powershell.status === 0) {
+      return parseProcessIds(powershell.stdout ?? "");
+    }
+
     const result = spawnSync(
-      windowsSystemExecutable("netstat.exe"),
+      resolveWindowsSystemExecutable("netstat.exe"),
       ["-ano", "-p", "tcp"],
       { encoding: "utf8", windowsHide: true, timeout: 15_000 },
     );
@@ -380,9 +398,13 @@ export function listeningProcessIds(port: number): number[] {
     { encoding: "utf8", timeout: 15_000 },
   );
   if (result.status !== 0 || !result.stdout) return [];
+  return parseProcessIds(result.stdout);
+}
+
+export function parseProcessIds(output: string): number[] {
   return [
     ...new Set(
-      result.stdout
+      output
         .split(/\r?\n/)
         .map((value) => Number.parseInt(value.trim(), 10))
         .filter((pid) => Number.isInteger(pid) && pid > 0),

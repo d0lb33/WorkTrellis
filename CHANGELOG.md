@@ -5,6 +5,21 @@ All notable changes to WorkTrellis are documented here. The project follows
 
 ## Unreleased
 
+## 0.4.3 - 2026-08-04
+
+### Fixed
+
+- Windows Git Bash shutdown now keeps the real WorkTrellis supervisor in the
+  foreground, while supervised application wrappers run in a separate hidden
+  console so one Ctrl+C cannot terminate every layer independently.
+- Portless-wrapped Node commands no longer pass a `C:\Program Files\...`
+  executable through Portless 0.15.x's unquoted `cmd.exe` command string, and
+  other child arguments that need Windows command quoting are protected.
+- Windows lost-state port recovery now discovers listener PIDs with
+  `Get-NetTCPConnection`, falling back to the system `netstat.exe`, and other
+  native diagnostic commands resolve explicitly from the Windows system
+  directory.
+
 ## 0.4.2 - 2026-08-04
 
 ### Added

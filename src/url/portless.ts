@@ -146,6 +146,8 @@ export interface PortlessAppRunner {
   aliasName: string;
   listenPort: number;
   tailscale: boolean;
+  /** Portless 0.15.x joins Windows child argv into one cmd.exe string. */
+  windowsCmdShell?: boolean;
   /** Allow Portless's own Tailscale CLI cleanup to finish before force-kill. */
   cooperativeShutdownGraceMs?: number;
 }
@@ -187,11 +189,14 @@ export function wrapCommandForPortless(
   const child =
     "node" in command
       ? [
-          process.execPath,
+          path.basename(process.execPath),
           path.resolve(projectRoot, command.node[0]!),
           ...command.node.slice(1),
         ]
       : [command.bin, ...command.args];
+  const compatibleChild = runner.windowsCmdShell
+    ? child.map(quoteWindowsCmdToken)
+    : child;
 
   return {
     node: [
@@ -202,9 +207,20 @@ export function wrapCommandForPortless(
       "--app-port",
       String(runner.listenPort),
       "--",
-      ...child,
+      ...compatibleChild,
     ],
   };
+}
+
+/**
+ * Portless 0.15.x invokes `cmd.exe /c` with `commandArgs.join(" ")` on
+ * Windows. Quote only tokens that cmd would otherwise split or interpret.
+ * The executable is normally the PATH-resolved `node.exe`, so a standard
+ * `C:\Program Files\nodejs` installation never appears in this command.
+ */
+export function quoteWindowsCmdToken(value: string): string {
+  if (!/[\s&|<>^()]/.test(value)) return value;
+  return `"${value.replace(/"/g, '\\"')}"`;
 }
 
 /** The hostname this workspace uses, without contacting the proxy. */
@@ -331,6 +347,7 @@ export async function resolvePortlessUrl(
       aliasName,
       listenPort,
       tailscale: options.tailscale ?? false,
+      windowsCmdShell: process.platform === "win32",
       ...(options.tailscale
         ? {
             cooperativeShutdownGraceMs:
