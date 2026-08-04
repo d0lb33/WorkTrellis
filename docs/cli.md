@@ -56,11 +56,16 @@ listener, walks to the highest live ancestor whose command line belongs to the
 current worktree, and refuses to signal the tree when ownership cannot be
 verified.
 
-On Windows, supervised application wrappers use a separate hidden console so
-Git Bash's console-wide Ctrl+C is handled by WorkTrellis first. The npm command
-remains attached until port verification and any required descendant cleanup
-finish. After a normal single-Ctrl+C shutdown, returning to the shell prompt
-therefore means cleanup has completed.
+On Windows, supervised application wrappers start without a console and are
+assigned to a parent-owned Job Object before their first instruction runs.
+No additional Command Prompt windows are opened. The npm command remains
+attached until port verification and any required descendant cleanup finish.
+WorkTrellis first preserves the cooperative wrapper-cleanup window; forced
+shutdown terminates the complete Job Object. If WorkTrellis itself exits
+abruptly, closing its Job handle terminates the payload and descendants. A
+launch fails instead of falling back to weak supervision when this lifecycle
+cannot be established. After a normal single-Ctrl+C shutdown, returning to the
+shell prompt therefore means cleanup has completed.
 
 ### `worktrellis status`
 

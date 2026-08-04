@@ -1,6 +1,6 @@
 {
   "name": "worktrellis",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "type": "module",
   "description": "Coordinate project-owned Compose stacks, isolated resources, ports, and environments across Git worktrees.",
   "license": "MIT",
@@ -57,6 +57,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.966.0",
+    "koffi": "3.1.4",
     "pg": "^8.18.0",
     "tsx": "^4.21.0"
   },

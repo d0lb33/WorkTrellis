@@ -1,4 +1,3 @@
-import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -10,6 +9,10 @@ import { ensureDirectory } from "../util/fs";
 import { c, info, NAMED_COLORS, PROCESS_COLORS, type Colorize } from "../util/log";
 import { canConnect } from "../platform/ports";
 import { killTree, requestCooperativeTreeShutdown } from "../util/proc";
+import {
+  spawnManagedProcess,
+  type ManagedProcess,
+} from "./managed-process";
 import { writeRunRecord, type RunChild, type RunRecord } from "./reaper";
 import {
   clearShutdownRequest,
@@ -29,7 +32,7 @@ import {
 export interface SupervisedProcess {
   spec: ProcessSpec;
   color: Colorize;
-  child: ChildProcess | null;
+  child: ManagedProcess | null;
   pid: number | null;
   restarts: number;
   state: "starting" | "running" | "ready" | "stopped" | "failed";
@@ -70,14 +73,6 @@ export function sanitizeMultiplexedOutput(value: string): string {
     .replace(/\u001b\[(?:[0-9;?]*[HJf]|[0-9;]*[JK])/g, "");
 }
 
-/** Keep Windows wrappers out of Git Bash's console-wide Ctrl+C broadcast. */
-export function supervisedProcessIsolation(): {
-  detached: true;
-  windowsHide: true;
-} {
-  return { detached: true, windowsHide: true };
-}
-
 function resolveCommand(
   command: Command,
   projectRoot: string,
@@ -102,6 +97,7 @@ export class Supervisor {
   private shuttingDown = false;
   private stopped: ((code: number) => void) | null = null;
   private stopRequestTimer: NodeJS.Timeout | null = null;
+  private launchesInFlight = 0;
   private readonly startedAtMs = Math.round(
     Date.now() - process.uptime() * 1_000,
   );
@@ -149,7 +145,7 @@ export class Supervisor {
         if (target) await this.waitUntilReady(target);
       }
       if (this.shuttingDown) break;
-      this.start(entry);
+      await this.start(entry);
       this.persistRunRecord();
     }
 
@@ -252,7 +248,7 @@ export class Supervisor {
     );
   }
 
-  private start(entry: SupervisedProcess): void {
+  private async start(entry: SupervisedProcess): Promise<void> {
     const { file, args } = resolveCommand(
       typeof entry.spec.command === "function"
         ? entry.spec.command(this.options.envContext)
@@ -267,26 +263,40 @@ export class Supervisor {
       FORCE_COLOR: process.env.FORCE_COLOR ?? "1",
     };
 
-    const child = spawn(file, args, {
-      cwd: this.options.projectRoot,
-      env,
-      stdio: ["ignore", "pipe", "pipe"],
-      // POSIX uses the new process group for tree signals. Windows uses a
-      // hidden, separate console so Git Bash's console-wide Ctrl+C reaches the
-      // WorkTrellis supervisor but not every nested wrapper independently.
-      ...supervisedProcessIsolation(),
-    });
+    entry.startedAt = Date.now();
+    let child: ManagedProcess;
+    this.launchesInFlight += 1;
+    try {
+      child = await spawnManagedProcess({
+        file,
+        args,
+        cwd: this.options.projectRoot,
+        env,
+      });
+    } catch (caught) {
+      this.write(
+        entry,
+        `failed to start: ${redactDiagnosticText(
+          caught instanceof Error ? caught.message : String(caught),
+          env,
+        )}`,
+      );
+      entry.state = "failed";
+      this.launchesInFlight -= 1;
+      this.onExit(entry, 1);
+      return;
+    }
 
+    this.launchesInFlight -= 1;
     entry.child = child;
     entry.pid = child.pid ?? null;
     entry.state = "running";
-    entry.startedAt = Date.now();
     entry.exitCode = null;
 
     this.pipe(entry, child, "stdout");
     this.pipe(entry, child, "stderr");
 
-    child.once("error", (caught) => {
+    child.onceError((caught) => {
       this.write(
         entry,
         `failed to start: ${redactDiagnosticText(caught.message, env)}`,
@@ -295,14 +305,19 @@ export class Supervisor {
       this.onExit(entry, 1);
     });
 
-    child.once("exit", (code, signal) => {
-      this.onExit(entry, code ?? (signal ? 143 : 0));
+    child.onceExit((code) => {
+      this.onExit(entry, code);
     });
+
+    // A stop request can arrive while the Windows native runtime or named
+    // pipes are loading. Never let that late launch escape the shutdown that
+    // is already in progress.
+    if (this.shuttingDown) child.forceTerminate(1);
   }
 
   private pipe(
     entry: SupervisedProcess,
-    child: ChildProcess,
+    child: ManagedProcess,
     stream: "stdout" | "stderr",
   ): void {
     const source = child[stream];
@@ -435,8 +450,7 @@ export class Supervisor {
 
     setTimeout(() => {
       if (!this.shuttingDown) {
-        this.start(entry);
-        this.persistRunRecord();
+        void this.start(entry).then(() => this.persistRunRecord());
       }
     }, delay);
   }
@@ -453,6 +467,7 @@ export class Supervisor {
   }
 
   private finishIfAllStopped(): void {
+    if (this.launchesInFlight > 0) return;
     const running = [...this.processes.values()].some(
       (entry) => entry.child !== null,
     );
@@ -491,7 +506,8 @@ export class Supervisor {
     }
 
     for (const entry of this.processes.values()) {
-      if (entry.pid) killTree(entry.pid, "SIGKILL");
+      if (entry.child) entry.child.forceTerminate(1);
+      else if (entry.pid) killTree(entry.pid, "SIGKILL");
     }
 
     this.finishIfAllStopped();
@@ -500,7 +516,8 @@ export class Supervisor {
   /** Last-resort synchronous kill, for `process.on("exit")`. */
   killAllSync(): void {
     for (const entry of this.processes.values()) {
-      if (entry.pid) killTree(entry.pid, "SIGKILL");
+      if (entry.child) entry.child.forceTerminate(1);
+      else if (entry.pid) killTree(entry.pid, "SIGKILL");
     }
   }
 

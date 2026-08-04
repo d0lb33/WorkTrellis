@@ -2,6 +2,7 @@ import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -32,9 +33,18 @@ import {
 } from "../src/resources";
 import {
   sanitizeMultiplexedOutput,
-  supervisedProcessIsolation,
   Supervisor,
 } from "../src/supervise/supervisor";
+import {
+  spawnManagedProcess,
+  type ManagedProcess,
+} from "../src/supervise/managed-process";
+import {
+  buildWindowsEnvironmentBlock,
+  describeWindowsError,
+  quoteWindowsArgument,
+  resolveWindowsExecutable,
+} from "../src/supervise/windows-job-process";
 import {
   normalizeProcessCommandLine,
   readRunRecord,
@@ -54,6 +64,7 @@ import {
   parseProcessIds,
   parseWindowsListeningProcessIds,
 } from "../src/util/proc";
+import { waitForPortClose } from "../src/platform/ports";
 import { resolveUrl } from "../src/url/provider";
 import {
   parsePortlessSharingUrl,
@@ -100,6 +111,25 @@ async function waitForFile(file: string, timeoutMs = 5_000): Promise<void> {
   if (!fs.existsSync(file)) {
     throw new Error(`timed out waiting for ${file}`);
   }
+}
+
+function collectManagedStream(stream: NodeJS.ReadableStream | null): Promise<string> {
+  if (!stream) return Promise.resolve("");
+  return new Promise((resolve, reject) => {
+    let output = "";
+    stream.on("data", (chunk) => {
+      output += String(chunk);
+    });
+    stream.once("error", reject);
+    stream.once("end", () => resolve(output));
+  });
+}
+
+function waitForManagedExit(managed: ManagedProcess): Promise<number> {
+  return new Promise((resolve, reject) => {
+    managed.onceError(reject);
+    managed.onceExit(resolve);
+  });
 }
 
 async function startTestPortOwner(
@@ -299,12 +329,244 @@ describe("WorkTrellis process supervision", () => {
     ).toContain("d:/a/worktrellis/worktrellis/child.js");
   });
 
-  it("isolates Windows wrappers from the caller's console interrupt", () => {
-    expect(supervisedProcessIsolation()).toEqual({
-      detached: true,
-      windowsHide: true,
-    });
+  it("quotes Windows process arguments without involving a shell", () => {
+    expect(quoteWindowsArgument("plain")).toBe("plain");
+    expect(quoteWindowsArgument("")).toBe('""');
+    expect(quoteWindowsArgument("two words")).toBe('"two words"');
+    expect(quoteWindowsArgument("C:\\Program Files\\node\\")).toBe(
+      '"C:\\Program Files\\node\\\\"',
+    );
+    expect(quoteWindowsArgument('say "hello"')).toBe(
+      '"say \\"hello\\""',
+    );
+    expect(() => quoteWindowsArgument("bad\0argument")).toThrow(
+      "cannot contain null characters",
+    );
   });
+
+  it("builds a sorted double-null-terminated Windows environment block", () => {
+    const block = buildWindowsEnvironmentBlock({
+      Zebra: "last",
+      alpha: "first",
+      "=C:": "C:\\workspace",
+      "bad=name": "ignored",
+    });
+    expect(block.toString("utf16le")).toBe(
+      "=C:=C:\\workspace\0alpha=first\0Zebra=last\0\0",
+    );
+  });
+
+  it("translates common Windows native process errors", () => {
+    expect(describeWindowsError(5)).toBe("access denied (5)");
+    expect(describeWindowsError(193)).toBe(
+      "not a valid Windows executable (193)",
+    );
+    expect(describeWindowsError(12345)).toBe("Win32 error (12345)");
+  });
+
+  it("resolves only a real Windows executable from PATH and PATHEXT", () => {
+    vi.spyOn(fs, "existsSync").mockImplementation(
+      (candidate) => String(candidate) === "C:\\Tools\\node.EXE",
+    );
+    expect(
+      resolveWindowsExecutable("node", "C:\\workspace", {
+        Path: "C:\\Tools",
+        PATHEXT: ".EXE;.CMD",
+      }),
+    ).toBe("C:\\Tools\\node.EXE");
+    expect(() =>
+      resolveWindowsExecutable("script.cmd", "C:\\workspace", {
+        Path: "C:\\Tools",
+        PATHEXT: ".EXE;.CMD",
+      }),
+    ).toThrow("could not resolve executable");
+  });
+
+  it.runIf(process.platform === "win32")(
+    "resolves the active Windows Node executable without a shell",
+    () => {
+      expect(
+        resolveWindowsExecutable(process.execPath, process.cwd(), process.env),
+      ).toBe(process.execPath);
+    },
+  );
+
+  it.runIf(process.platform === "win32")(
+    "launches without a console and preserves arguments and separate output pipes",
+    async () => {
+      const directory = path.join(
+        temporaryDirectory("worktrellis-native-launch"),
+        "folder with spaces & symbols",
+      );
+      fs.mkdirSync(directory, { recursive: true });
+      const script = path.join(directory, "inspect child.cjs");
+      const koffiPath = path.join(process.cwd(), "node_modules", "koffi");
+      fs.writeFileSync(
+        script,
+        `const koffi = require(${JSON.stringify(koffiPath)});
+const kernel32 = koffi.load("kernel32.dll");
+const GetConsoleWindow = kernel32.func("__stdcall", "GetConsoleWindow", "void *", []);
+process.stdout.write(JSON.stringify({ console: Boolean(GetConsoleWindow()), argv: process.argv.slice(2), sentinel: process.env.WORKTRELLIS_NATIVE_SENTINEL }) + "\\n");
+process.stderr.write("native-stderr-complete\\n");
+`,
+      );
+      const expectedArguments = [
+        "two words & ^ < > | ( ) % !",
+        'embedded "quote" and trailing slash\\',
+      ];
+      const managed = await spawnManagedProcess({
+        file: process.execPath,
+        args: [script, ...expectedArguments],
+        cwd: directory,
+        env: {
+          ...process.env,
+          WORKTRELLIS_NATIVE_SENTINEL: "present",
+        },
+      });
+      const stdout = collectManagedStream(managed.stdout);
+      const stderr = collectManagedStream(managed.stderr);
+
+      await expect(waitForManagedExit(managed)).resolves.toBe(0);
+      expect(JSON.parse((await stdout).trim())).toEqual({
+        console: false,
+        argv: expectedArguments,
+        sentinel: "present",
+      });
+      expect(await stderr).toBe("native-stderr-complete\n");
+    },
+    15_000,
+  );
+
+  it.runIf(process.platform === "win32")(
+    "force-terminates nested listeners in the Job and permits an immediate restart",
+    async () => {
+      const directory = temporaryDirectory("worktrellis-native-force");
+      const observedPids: number[] = [];
+
+      for (const attempt of [1, 2]) {
+        const attemptDirectory = path.join(directory, `attempt-${attempt}`);
+        fs.mkdirSync(attemptDirectory, { recursive: true });
+        const wrapperFile = path.join(attemptDirectory, "wrapper.cjs");
+        const childPidFile = path.join(attemptDirectory, "child.pid");
+        const portFile = path.join(attemptDirectory, "port");
+        const listener = `const fs = require("node:fs");
+const server = require("node:net").createServer(() => {});
+server.listen(0, "127.0.0.1", () => fs.writeFileSync(${JSON.stringify(portFile)}, String(server.address().port)));
+setInterval(() => {}, 1000);`;
+        fs.writeFileSync(
+          wrapperFile,
+          `const { spawn } = require("node:child_process");
+const fs = require("node:fs");
+const child = spawn(process.execPath, ["-e", ${JSON.stringify(listener)}], { stdio: "ignore" });
+fs.writeFileSync(${JSON.stringify(childPidFile)}, String(child.pid));
+setInterval(() => {}, 1000);
+`,
+        );
+
+        const managed = await spawnManagedProcess({
+          file: process.execPath,
+          args: [wrapperFile],
+          cwd: attemptDirectory,
+          env: { ...process.env },
+        });
+        const completion = waitForManagedExit(managed);
+        await waitForFile(childPidFile);
+        await waitForFile(portFile);
+        const childPid = Number(fs.readFileSync(childPidFile, "utf8"));
+        const port = Number(fs.readFileSync(portFile, "utf8"));
+        observedPids.push(managed.pid!, childPid);
+
+        expect(managed.forceTerminate(1)).toBe(true);
+        await expect(completion).resolves.not.toBe(0);
+        await expect(
+          waitForProcessExit(childPid, { timeoutMs: 5_000 }),
+        ).resolves.toBe(true);
+        await expect(waitForPortClose(port, { timeoutMs: 5_000 })).resolves.toBe(
+          true,
+        );
+      }
+
+      expect(new Set(observedPids).size).toBe(observedPids.length);
+    },
+    30_000,
+  );
+
+  it.runIf(process.platform === "win32")(
+    "closes the Job and its listener tree when the owning supervisor exits abruptly",
+    async () => {
+      const directory = temporaryDirectory("worktrellis-native-abrupt");
+      const wrapperFile = path.join(directory, "wrapper.cjs");
+      const ownerFile = path.join(directory, "owner.mjs");
+      const rootPidFile = path.join(directory, "root.pid");
+      const childPidFile = path.join(directory, "child.pid");
+      const portFile = path.join(directory, "port");
+      const listener = `const fs = require("node:fs");
+const server = require("node:net").createServer(() => {});
+server.listen(0, "127.0.0.1", () => fs.writeFileSync(${JSON.stringify(portFile)}, String(server.address().port)));
+setInterval(() => {}, 1000);`;
+      fs.writeFileSync(
+        wrapperFile,
+        `const { spawn } = require("node:child_process");
+const fs = require("node:fs");
+const child = spawn(process.execPath, ["-e", ${JSON.stringify(listener)}], { stdio: "ignore" });
+fs.writeFileSync(${JSON.stringify(childPidFile)}, String(child.pid));
+setInterval(() => {}, 1000);
+`,
+      );
+      const managedProcessUrl = pathToFileURL(
+        path.join(process.cwd(), "src", "supervise", "managed-process.ts"),
+      ).href;
+      fs.writeFileSync(
+        ownerFile,
+        `import fs from "node:fs";
+import { spawnManagedProcess } from ${JSON.stringify(managedProcessUrl)};
+const managed = await spawnManagedProcess({
+  file: process.execPath,
+  args: [${JSON.stringify(wrapperFile)}],
+  cwd: ${JSON.stringify(directory)},
+  env: { ...process.env },
+});
+fs.writeFileSync(${JSON.stringify(rootPidFile)}, String(managed.pid));
+setInterval(() => {}, 1000);
+`,
+      );
+
+      const owner = spawn(process.execPath, ["--import", "tsx", ownerFile], {
+        cwd: process.cwd(),
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      let rootPid: number | undefined;
+      let childPid: number | undefined;
+      try {
+        await waitForFile(rootPidFile, 10_000);
+        await waitForFile(childPidFile, 10_000);
+        await waitForFile(portFile, 10_000);
+        rootPid = Number(fs.readFileSync(rootPidFile, "utf8"));
+        childPid = Number(fs.readFileSync(childPidFile, "utf8"));
+        const port = Number(fs.readFileSync(portFile, "utf8"));
+
+        process.kill(owner.pid!, "SIGKILL");
+        await expect(
+          waitForProcessExit(owner.pid!, { timeoutMs: 5_000 }),
+        ).resolves.toBe(true);
+        await expect(
+          waitForProcessExit(rootPid, { timeoutMs: 5_000 }),
+        ).resolves.toBe(true);
+        await expect(
+          waitForProcessExit(childPid, { timeoutMs: 5_000 }),
+        ).resolves.toBe(true);
+        await expect(waitForPortClose(port, { timeoutMs: 5_000 })).resolves.toBe(
+          true,
+        );
+      } finally {
+        if (owner.pid && isProcessAlive(owner.pid)) process.kill(owner.pid, "SIGKILL");
+        if (rootPid && isProcessAlive(rootPid)) killTree(rootPid, "SIGKILL");
+        if (childPid && isProcessAlive(childPid)) killTree(childPid, "SIGKILL");
+      }
+    },
+    30_000,
+  );
 
   it("parses IPv4 and IPv6 Windows listeners without matching adjacent ports", () => {
     const output = [

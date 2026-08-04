@@ -5,6 +5,23 @@ All notable changes to WorkTrellis are documented here. The project follows
 
 ## Unreleased
 
+## 0.4.4 - 2026-08-04
+
+### Fixed
+
+- Windows foreground processes now start without an attached or detached
+  console and are assigned to a kill-on-close Job Object before execution, so
+  `worktrellis up` opens no extra Command Prompt windows and abrupt supervisor
+  exit cannot leave a descendant holding the workspace port.
+- Windows forced shutdown now terminates the complete managed Job Object while
+  preserving the existing bounded cooperative cleanup window first.
+
+### Changed
+
+- The Windows process launcher uses the exactly pinned `koffi@3.1.4` native
+  runtime on x64 and ARM64 and fails closed with an actionable error when safe
+  process-tree supervision cannot be established.
+
 ## 0.4.3 - 2026-08-04
 
 ### Fixed

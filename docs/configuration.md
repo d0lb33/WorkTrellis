@@ -390,7 +390,9 @@ signalling the wrapper; on Windows, WorkTrellis stops the wrapper's owned
 application tree so Portless can observe the exit and clean up naturally. A
 Tailscale-backed wrapper receives a longer bounded window because Portless's
 public CLI may wait for Tailscale cleanup; WorkTrellis never inspects or edits
-Serve state itself.
+Serve state itself. Windows payloads run without a console inside a
+kill-on-close Job Object, so forced escalation and abrupt WorkTrellis exit reap
+the complete descendant tree without opening extra terminal windows.
 
 ## Configuration compatibility
 
