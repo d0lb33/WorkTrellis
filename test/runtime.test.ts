@@ -36,6 +36,7 @@ import {
 } from "../src/supervise/supervisor";
 import {
   readRunRecord,
+  reapApplicationPort,
   reapOrphans,
   writeRunRecord,
   type RunRecord,
@@ -45,7 +46,11 @@ import {
   verifySupervisorForShutdown,
   waitForProcessExit,
 } from "../src/supervise/shutdown";
-import { isProcessAlive, killTree } from "../src/util/proc";
+import {
+  isProcessAlive,
+  killTree,
+  parseWindowsListeningProcessIds,
+} from "../src/util/proc";
 import { resolveUrl } from "../src/url/provider";
 import {
   parsePortlessSharingUrl,
@@ -91,6 +96,42 @@ async function waitForFile(file: string, timeoutMs = 5_000): Promise<void> {
   if (!fs.existsSync(file)) {
     throw new Error(`timed out waiting for ${file}`);
   }
+}
+
+async function startTestPortOwner(
+  directory: string,
+  label: string,
+): Promise<{ wrapperPid: number; childPid: number; port: number }> {
+  const ownerDirectory = path.join(directory, label);
+  fs.mkdirSync(ownerDirectory, { recursive: true });
+  const wrapperFile = path.join(ownerDirectory, "wrapper.cjs");
+  const childPidFile = path.join(ownerDirectory, "child.pid");
+  const portFile = path.join(ownerDirectory, "port");
+  fs.writeFileSync(
+    wrapperFile,
+    `const { spawn } = require("node:child_process");
+const fs = require("node:fs");
+const child = spawn(process.execPath, [
+  "-e",
+  ${JSON.stringify(`const fs = require("node:fs"); const server = require("node:net").createServer(); server.listen(0, "127.0.0.1", () => fs.writeFileSync(${JSON.stringify(portFile)}, String(server.address().port)));`)},
+], { stdio: "ignore" });
+fs.writeFileSync(${JSON.stringify(childPidFile)}, String(child.pid));
+setInterval(() => {}, 1000);
+`,
+  );
+
+  const wrapper = spawn(process.execPath, [wrapperFile], {
+    detached: process.platform !== "win32",
+    stdio: "ignore",
+  });
+  await waitForFile(childPidFile);
+  await waitForFile(portFile);
+
+  return {
+    wrapperPid: wrapper.pid!,
+    childPid: Number(fs.readFileSync(childPidFile, "utf8")),
+    port: Number(fs.readFileSync(portFile, "utf8")),
+  };
 }
 
 afterEach(() => {
@@ -236,6 +277,17 @@ describe("WorkTrellis package boundary", () => {
 });
 
 describe("WorkTrellis process supervision", () => {
+  it("parses IPv4 and IPv6 Windows listeners without matching adjacent ports", () => {
+    const output = [
+      "  TCP    0.0.0.0:3202      0.0.0.0:0      LISTENING       19428",
+      "  TCP    [::]:3202         [::]:0         LISTENING       19428",
+      "  TCP    127.0.0.1:13202   0.0.0.0:0      LISTENING       29124",
+      "  TCP    127.0.0.1:3202    127.0.0.1:5000 ESTABLISHED     7480",
+    ].join("\r\n");
+
+    expect(parseWindowsListeningProcessIds(output, 3202)).toEqual([19428]);
+  });
+
   it("prevents one multiplexed child from clearing sibling output", () => {
     expect(
       sanitizeMultiplexedOutput(
@@ -356,6 +408,77 @@ setInterval(() => {}, 1000);
         }
       }
     },
+  );
+
+  it(
+    "recovers verified port owners with retained state or explicit force",
+    async () => {
+      const directory = temporaryDirectory("worktrellis-port-owner");
+      const owners: Array<{ wrapperPid: number; childPid: number }> = [];
+
+      try {
+        const retained = await startTestPortOwner(directory, "retained");
+        owners.push(retained);
+        const recorded = await reapApplicationPort(retained.port, directory, {
+          record: {
+            supervisorPid: process.pid,
+            supervisorStartedAt: Date.now(),
+            project: "test",
+            slug: "test",
+            worktreeRoot: directory,
+            aliases: [],
+            children: [
+              {
+                name: "app",
+                pid: retained.wrapperPid,
+                startedAtMs: Date.now(),
+                cmdMustContain: directory,
+              },
+            ],
+          },
+        });
+        expect(recorded.blocked).toEqual([]);
+        expect(recorded.stopped).toEqual([{ pid: retained.wrapperPid }]);
+        await expect(
+          waitForProcessExit(retained.childPid, { timeoutMs: 2_000 }),
+        ).resolves.toBe(true);
+
+        const lost = await startTestPortOwner(directory, "lost");
+        owners.push(lost);
+        const guarded = await reapApplicationPort(lost.port, directory);
+        expect(guarded.stopped).toEqual([]);
+        expect(guarded.blocked).toEqual([
+          expect.objectContaining({
+            pid: lost.childPid,
+            reason: expect.stringContaining("--force"),
+          }),
+        ]);
+        expect(isProcessAlive(lost.wrapperPid)).toBe(true);
+        expect(isProcessAlive(lost.childPid)).toBe(true);
+
+        const recovered = await reapApplicationPort(lost.port, directory, {
+          allowUnrecorded: true,
+        });
+        expect(recovered.blocked).toEqual([]);
+        expect(recovered.stopped).toEqual([{ pid: lost.wrapperPid }]);
+        await expect(
+          waitForProcessExit(lost.wrapperPid, { timeoutMs: 2_000 }),
+        ).resolves.toBe(true);
+        await expect(
+          waitForProcessExit(lost.childPid, { timeoutMs: 2_000 }),
+        ).resolves.toBe(true);
+      } finally {
+        for (const owner of owners) {
+          if (isProcessAlive(owner.wrapperPid)) {
+            killTree(owner.wrapperPid, "SIGKILL");
+          }
+          if (isProcessAlive(owner.childPid)) {
+            killTree(owner.childPid, "SIGKILL");
+          }
+        }
+      }
+    },
+    10_000,
   );
 
   it(

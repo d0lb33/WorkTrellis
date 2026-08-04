@@ -49,12 +49,21 @@ after a timeout. It returns a failing exit code instead of reporting success
 when a managed process or the application port remains alive. Compose stacks
 remain running.
 
+If a wrapper exited before WorkTrellis could retain its run record, `down`
+still detects the expected application port. Run `worktrellis down --force` to
+authorize recovery from that lost-state case. WorkTrellis identifies the
+listener, walks to the highest live ancestor whose command line belongs to the
+current worktree, and refuses to signal the tree when ownership cannot be
+verified.
+
 ### `worktrellis status`
 
 Reports the worktree URL, supervised-process state, Compose health, and
 resolved resource names. If the supervisor is gone while a recorded child or
 application listener remains, status reports `orphaned` and exits with a
 failing status instead of describing the workspace as stopped.
+The deterministic application port is probed even when the live run record is
+missing.
 For a live Tailscale-backed run, human output includes `tailnet` and JSON output
 includes `url.sharingUrl`.
 Supports `--json`. Structured status omits the worktree root and provider
@@ -63,9 +72,11 @@ from diagnostic details.
 
 ### `worktrellis doctor`
 
-Checks Node, Git, the container engine, stack reachability, environment
-conflicts, generated-snapshot consumption, and project-defined doctor checks.
-Supports `--json`.
+Checks Node, Git, the expected application port, the container engine, stack
+reachability, environment conflicts, generated-snapshot consumption, and
+project-defined doctor checks. A held application port without a live
+WorkTrellis supervisor is a failing check with a safe recovery hint. Supports
+`--json`.
 
 ## Environment
 

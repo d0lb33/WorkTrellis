@@ -36,7 +36,7 @@ ${c.bold("Usage:")}  worktrellis <command> [options]
 
 ${c.bold("Daily:")}
   up                       Start services, provision this worktree, run the app
-  down                     Stop this worktree's processes
+  down                     Stop this worktree's processes  [--force]
   status                   What is running, and where
   doctor                   Diagnose the environment and report fixes
 
@@ -117,6 +117,7 @@ const COMMANDS: Record<string, CommandHandler> = {
     runDown({
       cwd: flagString(args, "cwd"),
       configPath: flagString(args, "config"),
+      force: flagBoolean(args, "force"),
     }),
   status: (args) =>
     runStatus({

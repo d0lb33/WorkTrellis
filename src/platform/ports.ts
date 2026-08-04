@@ -110,11 +110,10 @@ export async function waitForPort(
   return false;
 }
 
-/** Wait until nothing accepts TCP connections on `port`. */
+/** Wait until the TCP port can be rebound on wildcard and loopback. */
 export async function waitForPortClose(
   port: number,
   {
-    host = "127.0.0.1",
     timeoutMs = 2_000,
     intervalMs = 100,
   }: { host?: string; timeoutMs?: number; intervalMs?: number } = {},
@@ -122,13 +121,11 @@ export async function waitForPortClose(
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
-    if (!(await canConnect(port, host, Math.min(intervalMs * 4, 500)))) {
-      return true;
-    }
+    if (await isPortAvailable(port)) return true;
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
 
-  return !(await canConnect(port, host, 250));
+  return isPortAvailable(port);
 }
 
 export function canConnect(

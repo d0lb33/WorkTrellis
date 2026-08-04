@@ -397,7 +397,7 @@ database adapter makes sense. A Gotenberg service adapter does not.
 | Command | Purpose | Effect |
 | --- | --- | --- |
 | `up` | Start stacks, provision resources, write the environment, supervise processes | mutates |
-| `down` | Stop this worktree's supervised processes; shared stacks stay up | mutates |
+| `down [--force]` | Stop this worktree's supervised processes; `--force` recovers a verified lost-state port owner; shared stacks stay up | mutates |
 | `status` | Worktree URL, process state, stack health, resolved resource names | read only |
 | `doctor` | Node, Git, engine, stack reachability, environment conflicts, project checks | read only |
 | `info` | Identity, exact derived Compose project names and scopes, process ports | read only |

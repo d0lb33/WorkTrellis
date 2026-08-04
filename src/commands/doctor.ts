@@ -4,10 +4,12 @@ import path from "node:path";
 import type { DoctorResult } from "../types";
 import { EXIT } from "../core/errors";
 import { prepareWorkspace } from "../core/prepare";
-import { readMachineConfig } from "../core/state";
+import { readLiveRunState, readMachineConfig } from "../core/state";
 import { engineContext, engineVersion } from "../platform/engine";
+import { isPortInUse } from "../platform/ports";
 import { c, heading, info } from "../util/log";
 import { redactDiagnosticText } from "../core/env-resolve";
+import { isProcessAlive } from "../util/proc";
 
 export interface DoctorOptions {
   cwd?: string;
@@ -55,7 +57,7 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
     writeSnapshotFile: false,
   });
 
-  const { context, infrastructure, env } = prepared;
+  const { context, infrastructure, env, url } = prepared;
 
   checks.push(
     ok(
@@ -63,6 +65,31 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
       (await engineContext(infrastructure.engine))?.endpoint,
     ),
   );
+
+  const live = readLiveRunState(context.paths.state);
+  const appUrl = live?.url ?? url.url;
+  const supervisorAlive = live !== null && isProcessAlive(live.pid);
+  const appPortListening = await isPortInUse(appUrl.listenPort);
+  if (!supervisorAlive && appPortListening) {
+    checks.push(
+      fail(
+        `application port ${appUrl.listenPort} is occupied without a live WorkTrellis supervisor`,
+        "A leftover or unrelated process will prevent this worktree from using its expected port.",
+        "Run `worktrellis status`, then `worktrellis down --force` if the listener belongs to this worktree.",
+      ),
+    );
+  } else if (supervisorAlive && !appPortListening) {
+    checks.push(
+      warn(
+        `application supervisor pid ${live.pid} is running but port ${appUrl.listenPort} is not accepting connections`,
+        "The application may still be starting or may be unhealthy.",
+      ),
+    );
+  } else if (supervisorAlive) {
+    checks.push(ok(`application port ${appUrl.listenPort} ready`));
+  } else {
+    checks.push(ok(`application port ${appUrl.listenPort} available`));
+  }
 
   // Services
   for (const status of infrastructure.statuses) {

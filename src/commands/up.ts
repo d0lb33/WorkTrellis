@@ -1,14 +1,23 @@
 import path from "node:path";
 
 import { EXIT } from "../core/errors";
+import { buildContext } from "../core/context";
 import { prepareWorkspace } from "../core/prepare";
 import { ensureWorkspaceDatabase } from "../resources/postgres";
 import { describeResources, provisionResources } from "../resources";
-import { clearLiveRunState, writeLiveRunState } from "../core/state";
-import { reapOrphans } from "../supervise/reaper";
+import {
+  clearLiveRunState,
+  readLiveRunState,
+  writeLiveRunState,
+} from "../core/state";
+import {
+  clearRunRecord,
+  readRunRecord,
+  reapApplicationPort,
+  reapOrphans,
+} from "../supervise/reaper";
 import { installSignalHandlers } from "../supervise/signals";
 import { Supervisor } from "../supervise/supervisor";
-import { clearRunRecord } from "../supervise/reaper";
 import { c, heading, info, step, table, warn } from "../util/log";
 import type { UrlPreference } from "../url/provider";
 import {
@@ -22,6 +31,7 @@ import {
   clearMachineRunLease,
   writeMachineRunLease,
 } from "../platform/lineage-state";
+import { waitForPortClose } from "../platform/ports";
 
 export interface UpOptions {
   cwd?: string;
@@ -63,18 +73,13 @@ export function includesAppPortProcess(processes: ProcessSpec[]): boolean {
 }
 
 export async function runUp(options: UpOptions): Promise<number> {
-  // Clear leftovers from a previous run before anything tries to bind a port.
-  const prepared = await prepareWorkspace({
-    cwd: options.cwd,
-    configPath: options.configPath,
-    startServices: options.services !== false,
-    urlPreference: options.urlPreference,
-    tailscale: options.tailscale,
-    allowNewMachineVariants: options.newVariants,
-  });
-
-  const { context, infrastructure, url, env, envContext } = prepared;
-  const { identity } = context;
+  // Recover the previous run before URL resolution chooses a port. Otherwise
+  // an orphan on the preferred port could make a successful restart drift to
+  // another port even though the orphan is recoverable.
+  const preliminaryContext = await buildContext(options);
+  const { identity } = preliminaryContext;
+  const previousLive = readLiveRunState(preliminaryContext.paths.state);
+  const previousRecord = readRunRecord(preliminaryContext.paths.run);
 
   info("");
   heading(`${identity.project}  ${c.cyan(identity.slug)}`);
@@ -85,7 +90,9 @@ export async function runUp(options: UpOptions): Promise<number> {
   );
   info("");
 
-  const reaped = await reapOrphans(context.paths.run);
+  const reaped = await reapOrphans(preliminaryContext.paths.run, {
+    clearRecord: false,
+  });
   if (reaped.stopped.length > 0) {
     step(
       "reaping",
@@ -99,9 +106,65 @@ export async function runUp(options: UpOptions): Promise<number> {
   }
   if (reaped.blocked.length > 0) {
     warn("Cannot start while verified cleanup of the previous run is incomplete.");
-    await url.release();
     return EXIT.checkFailed;
   }
+
+  if (previousLive) {
+    let previousPortListening = !(await waitForPortClose(
+      previousLive.url.listenPort,
+      {
+        host: previousLive.url.listenHost || "127.0.0.1",
+        timeoutMs: 500,
+      },
+    ));
+    if (previousPortListening) {
+      const recovered = await reapApplicationPort(
+        previousLive.url.listenPort,
+        preliminaryContext.projectRoot,
+        { record: previousRecord },
+      );
+      for (const stopped of recovered.stopped) {
+        step(
+          "reaping",
+          `force-stopped application port owner ${c.gray(`pid ${stopped.pid}`)}`,
+        );
+      }
+      for (const blocked of recovered.blocked) {
+        warn(
+          `pid ${blocked.pid} on application port left alone: ${blocked.reason}`,
+        );
+      }
+      previousPortListening = !(await waitForPortClose(
+        previousLive.url.listenPort,
+        {
+          host: previousLive.url.listenHost || "127.0.0.1",
+          timeoutMs: 2_000,
+        },
+      ));
+      if (previousPortListening) {
+        warn(
+          `Cannot start while application port ${previousLive.url.listenPort} from the previous run is still occupied.`,
+        );
+        warn("Run `worktrellis down --force` after verifying the port belongs to this worktree.");
+        return EXIT.checkFailed;
+      }
+    }
+  }
+
+  clearRunRecord(preliminaryContext.paths.run);
+  clearLiveRunState(preliminaryContext.paths.state);
+  clearMachineRunLease(identity.repoKey, identity.slug);
+
+  const prepared = await prepareWorkspace({
+    cwd: options.cwd,
+    configPath: options.configPath,
+    startServices: options.services !== false,
+    urlPreference: options.urlPreference,
+    tailscale: options.tailscale,
+    allowNewMachineVariants: options.newVariants,
+  });
+
+  const { context, infrastructure, url, env, envContext } = prepared;
 
   // Services
   const unreachable = infrastructure.statuses.filter(
@@ -332,8 +395,6 @@ export async function runUp(options: UpOptions): Promise<number> {
   });
 
   const uninstall = installSignalHandlers(supervisor, async () => {
-    clearLiveRunState(context.paths.state);
-    clearMachineRunLease(identity.repoKey, identity.slug);
     await url.release();
   });
 
@@ -343,10 +404,41 @@ export async function runUp(options: UpOptions): Promise<number> {
   const code = await supervisor.run();
 
   uninstall();
+  let appPortClosed = await waitForPortClose(liveUrl.listenPort, {
+    host: liveUrl.listenHost || "127.0.0.1",
+    timeoutMs: 2_000,
+  });
+  if (!appPortClosed) {
+    const recovered = await reapApplicationPort(
+      liveUrl.listenPort,
+      context.projectRoot,
+      { record: readRunRecord(context.paths.run) },
+    );
+    for (const stopped of recovered.stopped) {
+      info(
+        `  force-stopped application port owner ${c.gray(`pid ${stopped.pid}`)}`,
+      );
+    }
+    for (const blocked of recovered.blocked) {
+      warn(`pid ${blocked.pid} on application port left alone: ${blocked.reason}`);
+    }
+    appPortClosed = await waitForPortClose(liveUrl.listenPort, {
+      host: liveUrl.listenHost || "127.0.0.1",
+      timeoutMs: 2_000,
+    });
+  }
+  await url.release();
+  if (!appPortClosed) {
+    warn(
+      `application port ${liveUrl.listenPort} is still accepting connections`,
+    );
+    warn("Shutdown is incomplete; run state was retained for `worktrellis down`.");
+    return EXIT.checkFailed;
+  }
+
   clearRunRecord(context.paths.run);
   clearLiveRunState(context.paths.state);
   clearMachineRunLease(identity.repoKey, identity.slug);
-  await url.release();
 
   return code === 0 ? EXIT.ok : EXIT.child;
 }

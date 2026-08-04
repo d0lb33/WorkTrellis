@@ -5,11 +5,32 @@ All notable changes to WorkTrellis are documented here. The project follows
 
 ## Unreleased
 
+## 0.4.2 - 2026-08-04
+
+### Added
+
+- `worktrellis down --force` can recover a lost-state application listener
+  after verifying that the listener and its live ancestors belong to the
+  current worktree.
+
 ### Changed
 
 - The installable WorkTrellis AI skill now covers machine-stack variant
   discovery, data-version declarations, consumer-safe reconciliation, explicit
   fresh lineages, targeted variant shutdown, and exit-code-4 conflicts.
+
+### Fixed
+
+- Windows shutdown now verifies that the application port is released after a
+  supervised wrapper exits, reaps the highest verified live application
+  ancestor when a wrapper leaves descendants behind, and retains recovery
+  state if cleanup remains incomplete.
+- `down` now probes the expected application port even when live state is
+  missing, while `status` and `doctor` report a held port instead of describing
+  the workspace as stopped or healthy.
+- Windows process discovery and tree termination now use explicit system
+  executables when available and report failed tree kills instead of silently
+  assuming they succeeded.
 
 ## 0.4.1 - 2026-08-01
 

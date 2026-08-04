@@ -5,7 +5,9 @@ import {
   describeProcesses,
   isProcessAlive,
   killTree,
+  listeningProcessIds,
   requestCooperativeTreeShutdown,
+  type ProcessDescription,
 } from "../util/proc";
 import { waitForProcessExit } from "./shutdown";
 
@@ -56,6 +58,11 @@ export interface ReapResult {
   /** Still alive because ownership could not be verified or signals failed. */
   blocked: Array<{ name: string; pid: number; reason: string }>;
   aliases: string[];
+}
+
+export interface PortReapResult {
+  stopped: Array<{ pid: number }>;
+  blocked: Array<{ pid: number; reason: string }>;
 }
 
 /**
@@ -167,4 +174,149 @@ export async function reapOrphans(
 
   if (clearRecord && result.blocked.length === 0) clearRunRecord(runFile);
   return result;
+}
+
+/**
+ * Recover an app tree after its recorded wrapper has already disappeared.
+ *
+ * The listening PID alone is not enough: it may be a restartable server child
+ * whose live parent will immediately replace it. Walk upward through live,
+ * worktree-owned ancestors and terminate the highest verified root. When the
+ * run record is gone, callers must explicitly opt into the command-line-only
+ * ownership proof (the `down --force` recovery path).
+ */
+export async function reapApplicationPort(
+  port: number,
+  worktreeRoot: string,
+  options: {
+    record?: RunRecord | null;
+    allowUnrecorded?: boolean;
+  } = {},
+): Promise<PortReapResult> {
+  const result: PortReapResult = { stopped: [], blocked: [] };
+  const listeners = [...new Set(listeningProcessIds(port))].filter((pid) =>
+    isProcessAlive(pid),
+  );
+  if (listeners.length === 0) return result;
+
+  if (!options.record && options.allowUnrecorded !== true) {
+    for (const pid of listeners) {
+      result.blocked.push({
+        pid,
+        reason:
+          "run state is missing; rerun `worktrellis down --force` to verify the port owner by its worktree path",
+      });
+    }
+    return result;
+  }
+
+  const described = describeWithLiveAncestors(listeners);
+  const expected = worktreeRoot.replace(/\\/g, "/").toLowerCase();
+  const earliestRecordedStart = options.record?.children
+    .map((child) => child.startedAtMs)
+    .filter(Number.isFinite)
+    .reduce<number | undefined>(
+      (earliest, value) =>
+        earliest === undefined ? value : Math.min(earliest, value),
+      undefined,
+    );
+
+  const roots = new Map<
+    number,
+    { root: ProcessDescription; listeners: number[] }
+  >();
+  for (const listenerPid of listeners) {
+    const listener = described.get(listenerPid);
+    if (
+      !listener ||
+      !belongsToWorktree(listener, expected, earliestRecordedStart)
+    ) {
+      result.blocked.push({
+        pid: listenerPid,
+        reason: "the listening process could not be verified as belonging to this worktree",
+      });
+      continue;
+    }
+
+    let root = listener;
+    const visited = new Set<number>([listener.pid]);
+    while (root.parentPid && !visited.has(root.parentPid)) {
+      const parent = described.get(root.parentPid);
+      if (!parent || !belongsToWorktree(parent, expected, earliestRecordedStart)) {
+        break;
+      }
+      visited.add(parent.pid);
+      root = parent;
+    }
+
+    const existing = roots.get(root.pid);
+    if (existing) {
+      existing.listeners.push(listenerPid);
+    } else {
+      roots.set(root.pid, { root, listeners: [listenerPid] });
+    }
+  }
+
+  for (const { root, listeners: ownedListeners } of roots.values()) {
+    const attempted = killTree(root.pid, "SIGKILL");
+    await waitForProcessExit(root.pid, { timeoutMs: 2_000, pollMs: 50 });
+    const survivors = ownedListeners.filter((pid) => isProcessAlive(pid));
+    if (survivors.length === 0) {
+      result.stopped.push({ pid: root.pid });
+    } else {
+      for (const pid of survivors) {
+        result.blocked.push({
+          pid,
+          reason: attempted
+            ? "the verified process tree did not exit after forced shutdown"
+            : "the operating-system tree kill failed",
+        });
+      }
+    }
+  }
+
+  return result;
+}
+
+function belongsToWorktree(
+  processInfo: ProcessDescription,
+  expectedRoot: string,
+  earliestRecordedStart: number | undefined,
+): boolean {
+  const command = processInfo.commandLine.replace(/\\/g, "/").toLowerCase();
+  if (!command.includes(expectedRoot)) return false;
+  if (
+    earliestRecordedStart !== undefined &&
+    processInfo.startedAt !== null &&
+    processInfo.startedAt < earliestRecordedStart - 10_000
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function describeWithLiveAncestors(
+  pids: number[],
+): Map<number, ProcessDescription> {
+  const described = new Map<number, ProcessDescription>();
+  const requested = new Set<number>();
+  let frontier = [...new Set(pids)];
+
+  for (let depth = 0; depth < 32 && frontier.length > 0; depth += 1) {
+    for (const pid of frontier) requested.add(pid);
+    const batch = describeProcesses(frontier);
+    for (const [pid, processInfo] of batch) described.set(pid, processInfo);
+    frontier = [
+      ...new Set(
+        [...batch.values()]
+          .map((processInfo) => processInfo.parentPid)
+          .filter(
+            (pid): pid is number =>
+              pid !== null && pid > 0 && !requested.has(pid),
+          ),
+      ),
+    ];
+  }
+
+  return described;
 }

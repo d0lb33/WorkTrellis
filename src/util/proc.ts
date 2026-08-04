@@ -118,22 +118,25 @@ export function isProcessAlive(pid: number): boolean {
  *
  * This is why WorkTrellis supervises its own children: `next dev` and
  * `tsx --watch` both fork, and signalling only the direct child leaves orphans
- * holding ports. On Windows `taskkill /T` walks the tree before killing, so no
- * step orphans the next; on POSIX the negative pid targets the process group
- * created by `detached: true`.
+ * holding ports. On Windows `taskkill /T` asks the operating system to walk
+ * the tree; on POSIX the negative pid targets the process group created by
+ * `detached: true`.
  */
 export function killTree(
   pid: number,
   signal: NodeJS.Signals = "SIGTERM",
-): void {
-  if (!Number.isInteger(pid) || pid <= 0) return;
+): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
 
   if (IS_WINDOWS) {
     const force = signal === "SIGKILL";
     const args = ["/pid", String(pid), "/T"];
     if (force) args.push("/F");
-    spawnSync("taskkill", args, { stdio: "ignore", windowsHide: true });
-    return;
+    const result = spawnSync(windowsSystemExecutable("taskkill.exe"), args, {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    return result.status === 0;
   }
 
   // A well-behaved wrapper handles SIGTERM and shuts down its own children.
@@ -146,7 +149,7 @@ export function killTree(
     }
   }
 
-  signalProcessOrGroup(pid, signal);
+  return signalProcessOrGroup(pid, signal);
 }
 
 /**
@@ -175,24 +178,45 @@ export function requestCooperativeTreeShutdown(pid: number): void {
   }
 }
 
-function signalProcessOrGroup(
-  pid: number,
-  signal: NodeJS.Signals,
-): void {
+function signalProcessOrGroup(pid: number, signal: NodeJS.Signals): boolean {
   try {
     process.kill(-pid, signal);
+    return true;
   } catch {
     try {
       process.kill(pid, signal);
+      return true;
     } catch {
-      // Already gone.
+      return false;
     }
   }
 }
 
+function windowsSystemExecutable(name: string): string {
+  const systemRoot = process.env.SystemRoot?.trim();
+  if (!systemRoot) return name;
+  const candidate = path.join(systemRoot, "System32", name);
+  return fs.existsSync(candidate) ? candidate : name;
+}
+
+function windowsPowerShellExecutable(): string {
+  const systemRoot = process.env.SystemRoot?.trim();
+  if (systemRoot) {
+    const candidate = path.join(
+      systemRoot,
+      "System32",
+      "WindowsPowerShell",
+      "v1.0",
+      "powershell.exe",
+    );
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return "powershell";
+}
+
 function directWindowsChildPids(rootPid: number): number[] {
   const result = spawnSync(
-    "powershell",
+    windowsPowerShellExecutable(),
     [
       "-NoProfile",
       "-NonInteractive",
@@ -248,6 +272,7 @@ function descendantPids(rootPid: number): number[] {
 
 export interface ProcessDescription {
   pid: number;
+  parentPid: number | null;
   commandLine: string;
   /** Epoch ms, when the platform reports it. */
   startedAt: number | null;
@@ -271,21 +296,22 @@ export function describeProcesses(
   if (IS_WINDOWS) {
     const filter = alive.map((pid) => `ProcessId=${pid}`).join(" or ");
     const result = spawnSync(
-      "powershell",
+      windowsPowerShellExecutable(),
       [
         "-NoProfile",
         "-NonInteractive",
         "-Command",
-        `Get-CimInstance Win32_Process -Filter "${filter}" | ForEach-Object { "$($_.ProcessId)\`t$($_.CreationDate.ToFileTimeUtc())\`t$($_.CommandLine)" }`,
+        `Get-CimInstance Win32_Process -Filter "${filter}" | ForEach-Object { "$($_.ProcessId)\`t$($_.ParentProcessId)\`t$($_.CreationDate.ToFileTimeUtc())\`t$($_.CommandLine)" }`,
       ],
       { encoding: "utf8", windowsHide: true, timeout: 15_000 },
     );
 
     if (result.status === 0 && result.stdout) {
       for (const line of result.stdout.split(/\r?\n/)) {
-        const [rawPid, rawFileTime, ...rest] = line.split("\t");
+        const [rawPid, rawParentPid, rawFileTime, ...rest] = line.split("\t");
         const pid = Number.parseInt(rawPid ?? "", 10);
         if (!Number.isInteger(pid)) continue;
+        const parsedParentPid = Number.parseInt(rawParentPid ?? "", 10);
         // Windows FILETIME: 100ns ticks since 1601-01-01.
         const fileTime = Number(rawFileTime);
         const startedAt = Number.isFinite(fileTime)
@@ -293,6 +319,10 @@ export function describeProcesses(
           : null;
         described.set(pid, {
           pid,
+          parentPid:
+            Number.isInteger(parsedParentPid) && parsedParentPid > 0
+              ? parsedParentPid
+              : null,
           commandLine: rest.join("\t"),
           startedAt,
         });
@@ -304,25 +334,77 @@ export function describeProcesses(
 
   const result = spawnSync(
     "ps",
-    ["-o", "pid=,lstart=,command=", "-p", alive.join(",")],
+    ["-o", "pid=,ppid=,lstart=,command=", "-p", alive.join(",")],
     { encoding: "utf8", timeout: 15_000 },
   );
 
   if (result.status === 0 && result.stdout) {
     for (const line of result.stdout.split("\n")) {
-      // pid, then a fixed-width 24-char `lstart`, then the command.
-      const match = /^\s*(\d+)\s+(.{24})\s(.*)$/.exec(line);
+      // pid, ppid, then a fixed-width 24-char `lstart`, then the command.
+      const match = /^\s*(\d+)\s+(\d+)\s+(.{24})\s(.*)$/.exec(line);
       if (!match) continue;
       const pid = Number.parseInt(match[1] ?? "", 10);
+      const parentPid = Number.parseInt(match[2] ?? "", 10);
       if (!Number.isInteger(pid)) continue;
-      const parsed = Date.parse(match[2] ?? "");
+      const parsed = Date.parse(match[3] ?? "");
       described.set(pid, {
         pid,
-        commandLine: match[3] ?? "",
+        parentPid:
+          Number.isInteger(parentPid) && parentPid > 0 ? parentPid : null,
+        commandLine: match[4] ?? "",
         startedAt: Number.isFinite(parsed) ? parsed : null,
       });
     }
   }
 
   return described;
+}
+
+/** Identify listeners without killing them. Callers must verify ownership. */
+export function listeningProcessIds(port: number): number[] {
+  if (!Number.isInteger(port) || port <= 0 || port > 65_535) return [];
+
+  if (IS_WINDOWS) {
+    const result = spawnSync(
+      windowsSystemExecutable("netstat.exe"),
+      ["-ano", "-p", "tcp"],
+      { encoding: "utf8", windowsHide: true, timeout: 15_000 },
+    );
+    if (result.status !== 0 || !result.stdout) return [];
+    return parseWindowsListeningProcessIds(result.stdout, port);
+  }
+
+  const result = spawnSync(
+    "lsof",
+    ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"],
+    { encoding: "utf8", timeout: 15_000 },
+  );
+  if (result.status !== 0 || !result.stdout) return [];
+  return [
+    ...new Set(
+      result.stdout
+        .split(/\r?\n/)
+        .map((value) => Number.parseInt(value.trim(), 10))
+        .filter((pid) => Number.isInteger(pid) && pid > 0),
+    ),
+  ];
+}
+
+export function parseWindowsListeningProcessIds(
+  output: string,
+  port: number,
+): number[] {
+  const pids = new Set<number>();
+  for (const line of output.split(/\r?\n/)) {
+    const columns = line.trim().split(/\s+/);
+    if (columns.length < 5 || columns[0]?.toUpperCase() !== "TCP") continue;
+    if (columns[3]?.toUpperCase() !== "LISTENING") continue;
+    const localAddress = columns[1] ?? "";
+    const separator = localAddress.lastIndexOf(":");
+    if (separator === -1) continue;
+    if (Number.parseInt(localAddress.slice(separator + 1), 10) !== port) continue;
+    const pid = Number.parseInt(columns[4] ?? "", 10);
+    if (Number.isInteger(pid) && pid > 0) pids.add(pid);
+  }
+  return [...pids];
 }

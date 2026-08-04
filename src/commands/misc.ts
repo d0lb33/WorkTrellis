@@ -19,6 +19,7 @@ import type {
 import type { StackStatus } from "../platform/stack";
 import {
   clearRunRecord,
+  reapApplicationPort,
   reapOrphans,
   readRunRecord,
   writeRunRecord,
@@ -32,7 +33,7 @@ import {
   whichSync,
 } from "../util/proc";
 import { releasePortlessAlias } from "../url/portless";
-import { canConnect, waitForPortClose } from "../platform/ports";
+import { isPortInUse, waitForPortClose } from "../platform/ports";
 import {
   clearShutdownRequest,
   requestGracefulShutdown,
@@ -63,14 +64,17 @@ function peek(options: CommonOptions) {
 // down
 // ---------------------------------------------------------------------------
 
-export async function runDown(options: CommonOptions): Promise<number> {
+export async function runDown(
+  options: CommonOptions & { force?: boolean },
+): Promise<number> {
   const prepared = await peek(options);
-  const { context } = prepared;
+  const { context, url } = prepared;
 
   const live = readLiveRunState(context.paths.state);
   const originalRecord = readRunRecord(context.paths.run);
   const supervisorPid = live?.pid ?? originalRecord?.supervisorPid;
   const hadRun = live !== null || originalRecord !== null;
+  const appUrl = live?.url ?? url.url;
 
   if (
     supervisorPid &&
@@ -125,6 +129,48 @@ export async function runDown(options: CommonOptions): Promise<number> {
     warn(`pid ${orphan.pid} (${orphan.name}) left alone: ${orphan.reason}`);
   }
 
+  let appPortStillListening = !(await waitForPortClose(appUrl.listenPort, {
+    host: appUrl.listenHost || "127.0.0.1",
+    timeoutMs: 2_000,
+  }));
+  let recoveredPortOwner = false;
+  const portRecoveryBlocked: Array<{ pid: number; reason: string }> = [];
+  if (appPortStillListening) {
+    const portRecovery = await reapApplicationPort(
+      appUrl.listenPort,
+      context.projectRoot,
+      {
+        record: originalRecord,
+        allowUnrecorded: options.force === true,
+      },
+    );
+    for (const stopped of portRecovery.stopped) {
+      recoveredPortOwner = true;
+      info(
+        `  force-stopped application port owner ${c.gray(`pid ${stopped.pid}`)}`,
+      );
+    }
+    for (const blocked of portRecovery.blocked) {
+      portRecoveryBlocked.push(blocked);
+      warn(
+        `pid ${blocked.pid} on application port left alone: ${blocked.reason}`,
+      );
+    }
+    appPortStillListening = !(await waitForPortClose(appUrl.listenPort, {
+      host: appUrl.listenHost || "127.0.0.1",
+      timeoutMs: 2_000,
+    }));
+    if (
+      appPortStillListening &&
+      portRecovery.stopped.length === 0 &&
+      portRecovery.blocked.length === 0
+    ) {
+      warn(
+        `could not identify the process listening on application port ${appUrl.listenPort}`,
+      );
+    }
+  }
+
   // Remove static aliases recorded by older WorkTrellis releases.
   for (const alias of reaped.aliases) {
     await releasePortlessAlias(context.projectRoot, alias);
@@ -135,16 +181,11 @@ export async function runDown(options: CommonOptions): Promise<number> {
   const remainingChildren = (originalRecord?.children ?? []).filter((child) =>
     isProcessAlive(child.pid),
   );
-  const appPortStillListening = live
-    ? !(await waitForPortClose(live.url.listenPort, {
-        host: live.url.listenHost || "127.0.0.1",
-        timeoutMs: 2_000,
-      }))
-    : false;
   const incomplete =
     remainingSupervisor ||
     remainingChildren.length > 0 ||
     reaped.blocked.length > 0 ||
+    (appPortStillListening && portRecoveryBlocked.length > 0) ||
     appPortStillListening;
 
   if (incomplete) {
@@ -160,10 +201,16 @@ export async function runDown(options: CommonOptions): Promise<number> {
     for (const child of remainingChildren) {
       warn(`managed process ${child.name} is still running as pid ${child.pid}`);
     }
-    if (appPortStillListening && live) {
-      warn(`application port ${live.url.listenPort} is still accepting connections`);
+    if (appPortStillListening) {
+      warn(`application port ${appUrl.listenPort} is still accepting connections`);
     }
-    warn("Shutdown is incomplete; run state was retained for diagnosis.");
+    if (originalRecord || live) {
+      warn(
+        "Shutdown is incomplete; available run state was retained for diagnosis.",
+      );
+    } else {
+      warn("Shutdown is incomplete, but no prior run state was available.");
+    }
     return EXIT.checkFailed;
   }
 
@@ -172,7 +219,7 @@ export async function runDown(options: CommonOptions): Promise<number> {
   clearMachineRunLease(context.identity.repoKey, context.identity.slug);
   clearShutdownRequest(context.paths.stop);
 
-  if (!hadRun) {
+  if (!hadRun && !recoveredPortOwner) {
     info("Nothing was running for this worktree.");
   } else {
     success("Stopped.");
@@ -190,15 +237,10 @@ export async function runStatus(options: CommonOptions): Promise<number> {
   const prepared = await peek(options);
   const { context, infrastructure, url, envContext, env } = prepared;
   const live = readLiveRunState(context.paths.state);
+  const reportedUrl = live?.url ?? url.url;
   const children = liveChildren(context.paths.run);
   const supervisorAlive = live !== null && isProcessAlive(live.pid);
-  const portListening = live
-    ? await canConnect(
-        live.url.listenPort,
-        live.url.listenHost || "127.0.0.1",
-        250,
-      )
-    : false;
+  const portListening = await isPortInUse(reportedUrl.listenPort);
   const runtimeState = classifyRuntimeState({
     supervisorAlive,
     liveChildCount: children.length,
@@ -215,7 +257,7 @@ export async function runStatus(options: CommonOptions): Promise<number> {
           running,
           orphaned,
           state: runtimeState,
-          url: url.url,
+          url: reportedUrl,
           compose: infrastructure.statuses,
           resourceAdapters: context.config.resources,
           resources: envContext.resources,
@@ -243,11 +285,11 @@ export async function runStatus(options: CommonOptions): Promise<number> {
     [
       "url",
       running || orphaned
-        ? c.cyan(url.url.appUrl)
-        : c.gray(`${url.url.appUrl} (when started)`),
+        ? c.cyan(reportedUrl.appUrl)
+        : c.gray(`${reportedUrl.appUrl} (when started)`),
     ],
-    ...(url.url.sharingUrl
-      ? ([["tailnet", c.cyan(url.url.sharingUrl)]] as Array<[string, string]>)
+    ...(reportedUrl.sharingUrl
+      ? ([["tailnet", c.cyan(reportedUrl.sharingUrl)]] as Array<[string, string]>)
       : []),
     ...describeResources(
       context.config.resources,
