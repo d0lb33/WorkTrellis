@@ -110,8 +110,8 @@ export async function reapOrphans(
       continue;
     }
 
-    const normalized = info.commandLine.replace(/\\/g, "/").toLowerCase();
-    const expected = child.cmdMustContain.replace(/\\/g, "/").toLowerCase();
+    const normalized = normalizeProcessCommandLine(info.commandLine);
+    const expected = normalizeProcessCommandLine(child.cmdMustContain);
 
     if (!normalized.includes(expected)) {
       result.blocked.push({
@@ -211,7 +211,7 @@ export async function reapApplicationPort(
   }
 
   const described = describeWithLiveAncestors(listeners);
-  const expected = worktreeRoot.replace(/\\/g, "/").toLowerCase();
+  const expected = normalizeProcessCommandLine(worktreeRoot);
   const earliestRecordedStart = options.record?.children
     .map((child) => child.startedAtMs)
     .filter(Number.isFinite)
@@ -283,7 +283,7 @@ function belongsToWorktree(
   expectedRoot: string,
   earliestRecordedStart: number | undefined,
 ): boolean {
-  const command = processInfo.commandLine.replace(/\\/g, "/").toLowerCase();
+  const command = normalizeProcessCommandLine(processInfo.commandLine);
   if (!command.includes(expectedRoot)) return false;
   if (
     earliestRecordedStart !== undefined &&
@@ -293,6 +293,11 @@ function belongsToWorktree(
     return false;
   }
   return true;
+}
+
+/** Normalize native and command-line-escaped Windows separators identically. */
+export function normalizeProcessCommandLine(value: string): string {
+  return value.replace(/\\+/g, "/").replace(/\/+/g, "/").toLowerCase();
 }
 
 function describeWithLiveAncestors(

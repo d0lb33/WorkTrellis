@@ -36,6 +36,7 @@ import {
   Supervisor,
 } from "../src/supervise/supervisor";
 import {
+  normalizeProcessCommandLine,
   readRunRecord,
   reapApplicationPort,
   reapOrphans,
@@ -290,6 +291,14 @@ describe("WorkTrellis package boundary", () => {
 });
 
 describe("WorkTrellis process supervision", () => {
+  it("normalizes escaped Windows paths for ownership verification", () => {
+    expect(
+      normalizeProcessCommandLine(
+        String.raw`node.exe -e "D:\\a\\WorkTrellis\\WorkTrellis\\child.js"`,
+      ),
+    ).toContain("d:/a/worktrellis/worktrellis/child.js");
+  });
+
   it("isolates Windows wrappers from the caller's console interrupt", () => {
     expect(supervisedProcessIsolation()).toEqual({
       detached: true,
