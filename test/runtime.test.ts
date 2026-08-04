@@ -32,9 +32,11 @@ import {
 } from "../src/resources";
 import {
   sanitizeMultiplexedOutput,
+  supervisedProcessIsolation,
   Supervisor,
 } from "../src/supervise/supervisor";
 import {
+  normalizeProcessCommandLine,
   readRunRecord,
   reapApplicationPort,
   reapOrphans,
@@ -49,12 +51,14 @@ import {
 import {
   isProcessAlive,
   killTree,
+  parseProcessIds,
   parseWindowsListeningProcessIds,
 } from "../src/util/proc";
 import { resolveUrl } from "../src/url/provider";
 import {
   parsePortlessSharingUrl,
   PORTLESS_TAILSCALE_CLEANUP_GRACE_MS,
+  quoteWindowsCmdToken,
   supportsReliablePortlessTailscale,
   wrapCommandForPortless,
 } from "../src/url/portless";
@@ -274,9 +278,34 @@ describe("WorkTrellis package boundary", () => {
 
     expect(runSelfCheck()).toBe(0);
   });
+
+  it("runs the npm bin in-process so Windows shutdown can finish", () => {
+    const launcher = fs.readFileSync(
+      path.join(process.cwd(), "bin", "worktrellis.mjs"),
+      "utf8",
+    );
+
+    expect(launcher).toContain('import("tsx/esm/api")');
+    expect(launcher).not.toContain("node:child_process");
+  });
 });
 
 describe("WorkTrellis process supervision", () => {
+  it("normalizes escaped Windows paths for ownership verification", () => {
+    expect(
+      normalizeProcessCommandLine(
+        String.raw`node.exe -e "D:\\a\\WorkTrellis\\WorkTrellis\\child.js"`,
+      ),
+    ).toContain("d:/a/worktrellis/worktrellis/child.js");
+  });
+
+  it("isolates Windows wrappers from the caller's console interrupt", () => {
+    expect(supervisedProcessIsolation()).toEqual({
+      detached: true,
+      windowsHide: true,
+    });
+  });
+
   it("parses IPv4 and IPv6 Windows listeners without matching adjacent ports", () => {
     const output = [
       "  TCP    0.0.0.0:3202      0.0.0.0:0      LISTENING       19428",
@@ -286,6 +315,12 @@ describe("WorkTrellis process supervision", () => {
     ].join("\r\n");
 
     expect(parseWindowsListeningProcessIds(output, 3202)).toEqual([19428]);
+  });
+
+  it("parses unique listener PIDs returned by Windows PowerShell", () => {
+    expect(parseProcessIds("19428\r\n19428\r\n29124\r\n")).toEqual([
+      19428, 29124,
+    ]);
   });
 
   it("prevents one multiplexed child from clearing sibling output", () => {
@@ -478,7 +513,7 @@ setInterval(() => {}, 1000);
         }
       }
     },
-    10_000,
+    30_000,
   );
 
   it(
@@ -1293,8 +1328,41 @@ describe("WorkTrellis Portless process delegation", () => {
         "--app-port",
         "3210",
         "--",
-        process.execPath,
+        path.basename(process.execPath),
         path.resolve("/project", "node_modules/next/dist/bin/next"),
+        "dev",
+      ],
+    });
+  });
+
+  it("quotes space-sensitive child tokens for Portless's Windows cmd wrapper", () => {
+    const projectRoot = path.resolve("/Users/Example Person/project");
+
+    expect(quoteWindowsCmdToken("C:\\Program Files\\nodejs\\node.exe")).toBe(
+      '"C:\\Program Files\\nodejs\\node.exe"',
+    );
+    expect(
+      wrapCommandForPortless(
+        { node: ["node_modules/next/dist/bin/next", "dev"] },
+        {
+          binary: path.join(projectRoot, "node_modules/portless/dist/cli.js"),
+          aliasName: "windows.test",
+          listenPort: 3202,
+          tailscale: false,
+          windowsCmdShell: true,
+        },
+        projectRoot,
+      ),
+    ).toMatchObject({
+      node: [
+        path.join(projectRoot, "node_modules/portless/dist/cli.js"),
+        "--name",
+        "windows.test",
+        "--app-port",
+        "3202",
+        "--",
+        path.basename(process.execPath),
+        `"${path.join(projectRoot, "node_modules/next/dist/bin/next")}"`,
         "dev",
       ],
     });

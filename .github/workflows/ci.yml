@@ -30,6 +30,7 @@ jobs:
       - run: pnpm test
       - run: pnpm build
       - run: node bin/worktrellis.mjs --version
+      - run: node bin/worktrellis.mjs info --config examples/basic/worktrellis.config.ts --json
       - run: npm pack --dry-run
 
   compose-integration:

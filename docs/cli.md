@@ -56,6 +56,12 @@ listener, walks to the highest live ancestor whose command line belongs to the
 current worktree, and refuses to signal the tree when ownership cannot be
 verified.
 
+On Windows, supervised application wrappers use a separate hidden console so
+Git Bash's console-wide Ctrl+C is handled by WorkTrellis first. The npm command
+remains attached until port verification and any required descendant cleanup
+finish. After a normal single-Ctrl+C shutdown, returning to the shell prompt
+therefore means cleanup has completed.
+
 ### `worktrellis status`
 
 Reports the worktree URL, supervised-process state, Compose health, and
