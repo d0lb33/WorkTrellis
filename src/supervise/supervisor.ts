@@ -10,6 +10,7 @@ import { c, info, NAMED_COLORS, PROCESS_COLORS, type Colorize } from "../util/lo
 import { canConnect } from "../platform/ports";
 import { killTree, requestCooperativeTreeShutdown } from "../util/proc";
 import {
+  mergeManagedProcessEnvironment,
   spawnManagedProcess,
   type ManagedProcess,
 } from "./managed-process";
@@ -256,12 +257,12 @@ export class Supervisor {
       this.options.projectRoot,
     );
 
-    const env = {
-      ...process.env,
-      ...this.options.env,
-      ...(entry.spec.env?.(this.options.envContext) ?? {}),
-      FORCE_COLOR: process.env.FORCE_COLOR ?? "1",
-    };
+    const env = mergeManagedProcessEnvironment([
+      process.env,
+      this.options.env,
+      entry.spec.env?.(this.options.envContext) ?? {},
+      { FORCE_COLOR: process.env.FORCE_COLOR ?? "1" },
+    ]);
 
     entry.startedAt = Date.now();
     let child: ManagedProcess;

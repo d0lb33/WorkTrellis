@@ -5,6 +5,19 @@ All notable changes to WorkTrellis are documented here. The project follows
 
 ## Unreleased
 
+## 0.4.5 - 2026-08-04
+
+### Fixed
+
+- Windows process monitoring now waits for the managed process handle to signal
+  before reading its exit status, so exit code 259 is not mistaken for a live
+  process and cannot leave shutdown waiting indefinitely.
+- Windows supervised-process environment layers now merge keys
+  case-insensitively with later layers winning, so `Path` and `PATH` overrides
+  resolve executables and reach child processes consistently.
+- Windows environment blocks now deduplicate case-insensitive names and use
+  locale-independent Unicode ordering required by `CreateProcessW`.
+
 ## 0.4.4 - 2026-08-04
 
 ### Fixed

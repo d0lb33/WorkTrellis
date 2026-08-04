@@ -26,6 +26,9 @@ const FILE_SHARE_WRITE = 0x00000002;
 const OPEN_EXISTING = 3;
 const FILE_ATTRIBUTE_NORMAL = 0x00000080;
 const STILL_ACTIVE = 259;
+const WAIT_OBJECT_0 = 0;
+const WAIT_TIMEOUT = 258;
+const WAIT_FAILED = 0xffffffff;
 
 interface WindowsBindings {
   koffi: typeof Koffi;
@@ -40,6 +43,7 @@ interface WindowsBindings {
   CreateFileW: (...args: unknown[]) => unknown;
   CreateProcessW: (...args: unknown[]) => boolean;
   ResumeThread: (...args: unknown[]) => number;
+  WaitForSingleObject: (...args: unknown[]) => number;
   GetExitCodeProcess: (...args: unknown[]) => boolean;
   GetLastError: () => number;
   CloseHandle: (handle: unknown) => boolean;
@@ -191,6 +195,12 @@ function createBindings(koffi: typeof Koffi): WindowsBindings {
     ResumeThread: kernel32.func("__stdcall", "ResumeThread", "uint32_t", [
       HANDLE,
     ]),
+    WaitForSingleObject: kernel32.func(
+      "__stdcall",
+      "WaitForSingleObject",
+      "uint32_t",
+      [HANDLE, "uint32_t"],
+    ),
     GetExitCodeProcess: kernel32.func(
       "__stdcall",
       "GetExitCodeProcess",
@@ -412,6 +422,23 @@ function monitorWindowsProcess(options: {
 
   const timer = setInterval(() => {
     if (exited) return;
+    const wait = options.bindings.WaitForSingleObject(processHandle, 0);
+    if (wait === WAIT_TIMEOUT) return;
+    if (wait === WAIT_FAILED) {
+      const caught = nativeError(options.bindings, "WaitForSingleObject");
+      for (const listener of errorListeners.splice(0)) listener(caught);
+      finish(1);
+      return;
+    }
+    if (wait !== WAIT_OBJECT_0) {
+      const caught = new WorkTrellisError(
+        `Windows process isolation WaitForSingleObject returned unexpected status ${wait}.`,
+      );
+      for (const listener of errorListeners.splice(0)) listener(caught);
+      finish(1);
+      return;
+    }
+
     const code = [STILL_ACTIVE];
     if (!options.bindings.GetExitCodeProcess(processHandle, code)) {
       const caught = nativeError(options.bindings, "GetExitCodeProcess");
@@ -419,7 +446,6 @@ function monitorWindowsProcess(options: {
       finish(1);
       return;
     }
-    if (code[0] === STILL_ACTIVE) return;
     finish(code[0] ?? 1);
   }, 50);
 
@@ -568,20 +594,44 @@ export function quoteWindowsArgument(value: string): string {
 }
 
 export function buildWindowsEnvironmentBlock(env: NodeJS.ProcessEnv): Buffer {
-  const entries = Object.entries(env)
-    .filter(
-      (entry): entry is [string, string] =>
-        entry[1] !== undefined &&
-        entry[0].length > 0 &&
-        (!entry[0].includes("=") || /^=[A-Za-z]:$/u.test(entry[0])) &&
-        !entry[0].includes("\0") &&
-        !entry[1].includes("\0"),
-    )
-    .sort(([left], [right]) =>
-      left.toLowerCase().localeCompare(right.toLowerCase()),
-    )
+  const unique = new Map<string, [string, string]>();
+  for (const entry of Object.entries(env)) {
+    if (
+      entry[1] === undefined ||
+      entry[0].length === 0 ||
+      (entry[0].includes("=") && !/^=[A-Za-z]:$/u.test(entry[0])) ||
+      entry[0].includes("\0") ||
+      entry[1].includes("\0")
+    ) {
+      continue;
+    }
+    unique.set(entry[0].toUpperCase(), entry as [string, string]);
+  }
+
+  const entries = [...unique.values()]
+    .sort(([left], [right]) => compareWindowsEnvironmentNames(left, right))
     .map(([key, value]) => `${key}=${value}`);
   return Buffer.from(`${entries.join("\0")}\0\0`, "utf16le");
+}
+
+function compareWindowsEnvironmentNames(left: string, right: string): number {
+  const foldedLeft = left.toUpperCase();
+  const foldedRight = right.toUpperCase();
+  if (foldedLeft < foldedRight) return -1;
+  if (foldedLeft > foldedRight) return 1;
+  return 0;
+}
+
+function windowsEnvironmentValue(
+  env: NodeJS.ProcessEnv,
+  name: string,
+): string | undefined {
+  const canonical = name.toUpperCase();
+  let resolved: string | undefined;
+  for (const [key, value] of Object.entries(env)) {
+    if (key.toUpperCase() === canonical) resolved = value;
+  }
+  return resolved;
 }
 
 export function resolveWindowsExecutable(
@@ -589,7 +639,7 @@ export function resolveWindowsExecutable(
   cwd: string,
   env: NodeJS.ProcessEnv,
 ): string {
-  const extensions = (env.PATHEXT ?? ".COM;.EXE")
+  const extensions = (windowsEnvironmentValue(env, "PATHEXT") ?? ".COM;.EXE")
     .split(";")
     .map((extension) => extension.toUpperCase())
     .filter((extension) => extension === ".COM" || extension === ".EXE");
@@ -605,13 +655,15 @@ export function resolveWindowsExecutable(
       if (fs.existsSync(candidate)) return candidate;
     }
   } else {
-    const systemRoot = env.SystemRoot ?? env.SYSTEMROOT;
+    const systemRoot = windowsEnvironmentValue(env, "SystemRoot");
     const directories = [
       cwd,
       ...(systemRoot
         ? [path.win32.join(systemRoot, "System32"), systemRoot]
         : []),
-      ...(env.Path ?? env.PATH ?? "").split(";").filter(Boolean),
+      ...(windowsEnvironmentValue(env, "PATH") ?? "")
+        .split(";")
+        .filter(Boolean),
     ];
     for (const directory of directories) {
       for (const candidate of candidates(path.win32.join(directory, command))) {

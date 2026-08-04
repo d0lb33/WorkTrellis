@@ -19,6 +19,29 @@ export interface ManagedProcessOptions {
   env: NodeJS.ProcessEnv;
 }
 
+export function mergeManagedProcessEnvironment(
+  sources: NodeJS.ProcessEnv[],
+  caseInsensitive = process.platform === "win32",
+): NodeJS.ProcessEnv {
+  if (!caseInsensitive) return Object.assign({}, ...sources);
+
+  const merged = new Map<string, { key: string; value: string }>();
+  for (const source of sources) {
+    for (const [key, value] of Object.entries(source)) {
+      const canonical = key.toUpperCase();
+      if (value === undefined) {
+        merged.delete(canonical);
+      } else {
+        merged.set(canonical, { key, value });
+      }
+    }
+  }
+
+  return Object.fromEntries(
+    [...merged.values()].map(({ key, value }) => [key, value]),
+  );
+}
+
 export async function spawnManagedProcess(
   options: ManagedProcessOptions,
 ): Promise<ManagedProcess> {

@@ -36,6 +36,7 @@ import {
   Supervisor,
 } from "../src/supervise/supervisor";
 import {
+  mergeManagedProcessEnvironment,
   spawnManagedProcess,
   type ManagedProcess,
 } from "../src/supervise/managed-process";
@@ -344,15 +345,32 @@ describe("WorkTrellis process supervision", () => {
     );
   });
 
-  it("builds a sorted double-null-terminated Windows environment block", () => {
+  it("merges Windows environment layers case-insensitively with later values winning", () => {
+    expect(
+      mergeManagedProcessEnvironment(
+        [
+          { Path: "C:\\Inherited", TEMP: "base" },
+          { PATH: "C:\\Configured", temp: "override" },
+        ],
+        true,
+      ),
+    ).toEqual({ PATH: "C:\\Configured", temp: "override" });
+  });
+
+  it("builds an ordinally sorted and case-normalized Windows environment block", () => {
     const block = buildWindowsEnvironmentBlock({
       Zebra: "last",
       alpha: "first",
       "=C:": "C:\\workspace",
+      _WT: "underscore",
+      "[WT": "bracket",
+      "ÄVAR": "unicode",
+      Path: "C:\\Inherited",
+      PATH: "C:\\Configured",
       "bad=name": "ignored",
     });
     expect(block.toString("utf16le")).toBe(
-      "=C:=C:\\workspace\0alpha=first\0Zebra=last\0\0",
+      "=C:=C:\\workspace\0alpha=first\0PATH=C:\\Configured\0Zebra=last\0[WT=bracket\0_WT=underscore\0ÄVAR=unicode\0\0",
     );
   });
 
@@ -380,6 +398,19 @@ describe("WorkTrellis process supervision", () => {
         PATHEXT: ".EXE;.CMD",
       }),
     ).toThrow("could not resolve executable");
+  });
+
+  it("uses the final case-insensitive PATH value to resolve Windows executables", () => {
+    vi.spyOn(fs, "existsSync").mockImplementation(
+      (candidate) => String(candidate) === "C:\\Configured\\tool.EXE",
+    );
+    expect(
+      resolveWindowsExecutable("tool", "C:\\workspace", {
+        Path: "C:\\Inherited",
+        PATH: "C:\\Configured",
+        PATHEXT: ".EXE",
+      }),
+    ).toBe("C:\\Configured\\tool.EXE");
   });
 
   it.runIf(process.platform === "win32")(
@@ -433,6 +464,21 @@ process.stderr.write("native-stderr-complete\\n");
         sentinel: "present",
       });
       expect(await stderr).toBe("native-stderr-complete\n");
+    },
+    15_000,
+  );
+
+  it.runIf(process.platform === "win32")(
+    "reports exit code 259 after the managed process has terminated",
+    async () => {
+      const managed = await spawnManagedProcess({
+        file: process.execPath,
+        args: ["-e", "process.exit(259)"],
+        cwd: process.cwd(),
+        env: { ...process.env },
+      });
+
+      await expect(waitForManagedExit(managed)).resolves.toBe(259);
     },
     15_000,
   );
