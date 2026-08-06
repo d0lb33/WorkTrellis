@@ -33,3 +33,21 @@ long-lived npm token and receives only `contents: read` and `id-token: write`.
 
 Publishing is then performed by `.github/workflows/publish.yml`. The workflow
 verifies that the release tag matches `package.json` before invoking npm.
+Stable releases publish with the `latest` npm dist-tag.
+
+## Beta releases
+
+Use a SemVer prerelease such as `0.4.6-beta.0`, add its dated changelog entry,
+and create a GitHub **prerelease** tagged exactly `v0.4.6-beta.0`. The workflow
+requires prerelease status to agree with the package version and publishes the
+package with the `beta` npm dist-tag. It never moves `latest` to a beta build.
+
+Install and verify a beta with:
+
+```bash
+pnpm add -D worktrellis@beta
+npm view worktrellis dist-tags
+```
+
+Increment subsequent beta builds (`beta.1`, `beta.2`, and so on) before the
+final stable version. Do not run `npm publish` manually.

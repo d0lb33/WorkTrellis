@@ -5,6 +5,21 @@ All notable changes to WorkTrellis are documented here. The project follows
 
 ## Unreleased
 
+## 0.4.6-beta.0 - 2026-08-06
+
+### Added
+
+- Machine-local Docker context endpoint mappings can publish declared Compose
+  ports on a VM interface while generated URLs, resource provisioning, and
+  health checks connect through the corresponding VM-reachable host.
+- `worktrellis services endpoint` shows, sets, or clears the active Docker
+  context mapping and detects when that context has been repointed.
+
+### Changed
+
+- Prerelease GitHub releases publish to npm under the `beta` dist-tag, while
+  stable releases explicitly retain the `latest` dist-tag.
+
 ## 0.4.5 - 2026-08-04
 
 ### Fixed

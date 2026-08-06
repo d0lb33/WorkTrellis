@@ -33,8 +33,10 @@ export default defineConfig({
 ## Compose stacks
 
 Projects own every service definition. WorkTrellis selects a scope, generates
-the Compose project identity, publishes named ports on `127.0.0.1`, checks for
-conflicts, and starts or inspects the stack.
+the Compose project identity, publishes named ports on loopback by default,
+checks for conflicts, and starts or inspects the stack. A machine-local Docker
+context endpoint may select a different bind and connection address for a
+local VM.
 
 ```ts
 compose: [
@@ -124,8 +126,37 @@ WorkTrellis derives a stable port from the selected scope. Supported probes are
 `tcp`, `http`, `postgres`, `redis`, `smtp`, and `none`. TCP is the default;
 UDP ports default to `none`.
 
-`compose.url(stack, port, scheme?)` returns a loopback URL for a declared named
-port. Raw ports are available at `compose.stacks[stack].ports[port]`.
+`compose.host` is the address where declared ports are reachable from the
+machine running WorkTrellis. `compose.url(stack, port, scheme?)` combines that
+host with a declared named port. Raw ports remain available at
+`compose.stacks[stack].ports[port]`.
+
+### Docker context service endpoints
+
+Docker owns context selection through `docker context use`, `DOCKER_CONTEXT`,
+and its normal CLI configuration. WorkTrellis can record how published ports
+for the active context are reached:
+
+```text
+worktrellis services endpoint set \
+  --bind-address 0.0.0.0 \
+  --connect-host 10.211.55.4
+```
+
+The mapping is machine-local and stored by Docker context name under
+`WORKTRELLIS_HOME`; it does not belong in project configuration. Prefer an
+exact VM-interface address over `0.0.0.0`. Wildcard publication exposes the
+declared ports on every matching interface and therefore requires an
+appropriately restricted VM network and firewall.
+
+WorkTrellis fingerprints the context's Docker API endpoint when recording the
+mapping. If the context is later repointed, commands fail until the mapping is
+reviewed and set again or cleared. Contexts without a mapping preserve the
+loopback default.
+
+This setting only coordinates host-port publication and reachability. VM
+lifecycle, firewall rules, DNS, tunnels, and remote bind-mount paths remain
+owned by the developer, virtualization platform, and Compose project.
 
 WorkTrellis has no runtime service catalog. PostGIS, PgAdmin, Gotenberg,
 Mailpit, MSSQL, and new containers require no core change.

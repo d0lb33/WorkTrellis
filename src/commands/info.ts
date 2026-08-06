@@ -1,9 +1,11 @@
 import path from "node:path";
 
 import { buildContext, type CommandContext } from "../core/context";
-import { EXIT } from "../core/errors";
+import { EXIT, WorkTrellisError } from "../core/errors";
 import { readWorkspaceRecords } from "../core/state";
 import { renderStack } from "../platform/compose-render";
+import { detectEngine } from "../platform/engine";
+import { resolveEngineEndpoint } from "../platform/engine-endpoint";
 import { selectedLineage } from "../platform/lineage-state";
 import type { ResolvedComposeStack } from "../types";
 import { c, heading, info, table } from "../util/log";
@@ -19,6 +21,7 @@ export function resolveInfoComposeProjects(
     CommandContext,
     "config" | "projectRoot" | "identity" | "baseEnv"
   >,
+  bindAddress = "127.0.0.1",
 ): ResolvedComposeStack[] {
   const baseEnv = Object.freeze(Object.fromEntries(context.baseEnv));
 
@@ -28,6 +31,7 @@ export function resolveInfoComposeProjects(
       projectRoot: context.projectRoot,
       identity: context.identity,
       baseEnv,
+      bindAddress,
     });
     const selection =
       spec.scope === "machine"
@@ -47,7 +51,18 @@ export function resolveInfoComposeProjects(
 export async function runInfo(options: InfoOptions): Promise<number> {
   const context = await buildContext(options);
   const { identity } = context;
-  const composeProjects = resolveInfoComposeProjects(context);
+  let bindAddress = "127.0.0.1";
+  try {
+    bindAddress = (await resolveEngineEndpoint(await detectEngine())).bindAddress;
+  } catch (caught) {
+    // Identity inspection remains useful before a container engine is
+    // installed. A stale configured mapping is different: using loopback would
+    // report the wrong compatibility identity, so preserve that failure.
+    if (!(caught instanceof WorkTrellisError) || !/No container engine found/.test(caught.message)) {
+      throw caught;
+    }
+  }
+  const composeProjects = resolveInfoComposeProjects(context, bindAddress);
 
   if (options.json) {
     console.log(

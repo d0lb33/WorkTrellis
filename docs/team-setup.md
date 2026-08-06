@@ -96,6 +96,9 @@ shared WorkTrellis package.
 Treat `worktrellis.config.ts`, project Compose files, restore scripts, and the
 lockfile as reviewed source code. Keep machine-specific choices in
 `~/.worktrellis/machine.json`, normally through `worktrellis services adopt`.
+Docker-context bind and connection addresses are also machine-local and should
+be managed with `worktrellis services endpoint`, never committed to the
+project.
 Keep worktree-specific choices in `.worktrellis/local.json`.
 
 Choose the narrowest useful Compose scope:

@@ -102,6 +102,8 @@ export interface ResolvedComposeStack {
 }
 
 export interface ComposeContext {
+  /** Hostname or address where declared ports are reachable from this machine. */
+  host: string;
   stacks: Readonly<Record<string, ResolvedComposeStack>>;
   /** URL for a declared named port. HTTP is the default scheme. */
   url(stack: string, port: string, scheme?: string): string;

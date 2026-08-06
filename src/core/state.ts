@@ -117,6 +117,18 @@ export interface MachineConfig {
   portOverrides?: Record<string, number>;
   /** Preferred container engine, when both are installed. */
   engine?: "docker" | "podman";
+  /** Host reachability for named Compose ports, keyed by Docker context. */
+  dockerContexts?: Record<
+    string,
+    {
+      /** SHA-256 of the Docker API endpoint when this mapping was recorded. */
+      endpointFingerprint: string;
+      /** Address Docker binds on the engine host. */
+      bindAddress: string;
+      /** Hostname or address used by development processes on this machine. */
+      connectHost: string;
+    }
+  >;
 }
 
 export function readMachineConfig(): MachineConfig {

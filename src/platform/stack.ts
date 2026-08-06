@@ -31,9 +31,13 @@ import { renderStack, type RenderedStack } from "./compose-render";
 import {
   assertDaemonRunning,
   detectEngine,
-  engineContext,
   type ContainerEngine,
 } from "./engine";
+import {
+  hostForUrl,
+  resolveEngineEndpoint,
+  type EngineEndpoint,
+} from "./engine-endpoint";
 import { probePort, waitForPortProbe } from "./health";
 import { describePortOwner, whoHolds } from "./port-owner";
 
@@ -51,6 +55,7 @@ export interface StackStatus {
 
 export interface EnsureResult {
   engine: ContainerEngine;
+  endpoint: EngineEndpoint;
   compose: ComposeContext;
   statuses: StackStatus[];
   stacks: Array<{ spec: ComposeStackSpec; stack: ComposeStack }>;
@@ -263,21 +268,25 @@ export async function ensureInfrastructure(
     identity: WorkspaceIdentity;
     projectRoot: string;
     baseEnv?: Readonly<Record<string, string>>;
-    host?: string;
+    endpoint?: EngineEndpoint;
+    allowStaleEndpoint?: boolean;
     startIfStopped?: boolean;
     allowNewMachineVariants?: readonly string[];
     interactive?: boolean;
   },
 ): Promise<EnsureResult> {
-  const host = options.host ?? "127.0.0.1";
   const startIfStopped = options.startIfStopped ?? true;
   const engine = await detectEngine();
   await assertDaemonRunning(engine);
-
-  const context = await engineContext(engine);
+  const endpoint =
+    options.endpoint ??
+    (await resolveEngineEndpoint(engine, {
+      allowStale: options.allowStaleEndpoint,
+    }));
+  const host = endpoint.connectHost;
   const remoteEngineNote =
-    context?.isRemote === true
-      ? `container engine is remote (${context.name} -> ${context.endpoint}); published ports live on that host`
+    endpoint.isRemote
+      ? `container engine is remote (${endpoint.contextName}); published ports bind ${endpoint.bindAddress} and are reached at ${endpoint.connectHost}`
       : undefined;
 
   const stacks: Array<{ spec: ComposeStackSpec; stack: ComposeStack }> = [];
@@ -300,6 +309,7 @@ export async function ensureInfrastructure(
       options.projectRoot,
       options.identity,
       options.baseEnv,
+      endpoint.bindAddress,
     );
     if (startIfStopped && spec.scope === "machine") {
       const variants = await listMachineVariants({
@@ -331,6 +341,7 @@ export async function ensureInfrastructure(
             options.projectRoot,
             options.identity,
             options.baseEnv,
+            endpoint.bindAddress,
           );
         }
       }
@@ -346,6 +357,7 @@ export async function ensureInfrastructure(
               identity: options.identity,
               baseEnv: options.baseEnv ?? {},
               sourceProject: conflict.projectName,
+              bindAddress: endpoint.bindAddress,
             });
             conflict.reconcileSafe = assessment.safe;
             conflict.reconcileReason = assessment.reason;
@@ -363,6 +375,7 @@ export async function ensureInfrastructure(
               identity: options.identity,
               baseEnv: options.baseEnv ?? {},
               sourceProject: choice.projectName,
+              bindAddress: endpoint.bindAddress,
             });
             stack = stackFor(
               engine,
@@ -370,6 +383,7 @@ export async function ensureInfrastructure(
               options.projectRoot,
               options.identity,
               options.baseEnv,
+              endpoint.bindAddress,
             );
           }
         }
@@ -384,7 +398,13 @@ export async function ensureInfrastructure(
       : !stack.matchesDefinition();
     let healthy = await stack.isHealthy();
     if (!healthy && startIfStopped) {
-      await assertPortsAvailable(spec, stack, engine);
+      await assertPortsAvailable(
+        spec,
+        stack,
+        engine,
+        endpoint.bindAddress,
+        endpoint.isRemote,
+      );
 
       await withLock(rendered.stackId, async () => {
         if (await stack.isHealthy()) return;
@@ -473,6 +493,7 @@ export async function ensureInfrastructure(
 
   return {
     engine,
+    endpoint,
     compose: composeContext(stacks, host),
     statuses,
     stacks,
@@ -498,6 +519,7 @@ function composeContext(
   );
 
   return {
+    host,
     stacks: Object.freeze(resolved),
     url(stackName, portName, scheme = "http") {
       const stack = resolved[stackName];
@@ -512,7 +534,7 @@ function composeContext(
           `Unknown Compose port "${stackName}.${portName}" in env profile.`,
         );
       }
-      return `${scheme}://${host}:${port}`;
+      return `${scheme}://${hostForUrl(host)}:${port}`;
     },
   };
 }
@@ -521,12 +543,16 @@ async function assertPortsAvailable(
   spec: ComposeStackSpec,
   stack: ComposeStack,
   engine: ContainerEngine,
+  bindAddress: string,
+  remote = false,
 ): Promise<void> {
   for (const [name, port] of Object.entries(stack.rendered.ports)) {
     const owner = await whoHolds(port, {
       engine,
       ourStackIds: [stack.rendered.stackId],
       protocol: stack.rendered.portSpecs[name]?.protocol ?? "tcp",
+      bindAddress,
+      checkLocalProcesses: !remote,
     });
     if (owner.kind === "free" || owner.kind === "our-stack") continue;
 
@@ -550,8 +576,15 @@ export function stackFor(
   projectRoot: string,
   identity: WorkspaceIdentity,
   baseEnv?: Readonly<Record<string, string>>,
+  bindAddress = "127.0.0.1",
 ): ComposeStack {
-  const desired = renderStack({ spec, projectRoot, identity, baseEnv });
+  const desired = renderStack({
+    spec,
+    projectRoot,
+    identity,
+    baseEnv,
+    bindAddress,
+  });
   const selection =
     spec.scope === "machine"
       ? selectedLineage(desired.compatibilityId)
@@ -564,6 +597,7 @@ export function stackFor(
           projectRoot,
           identity,
           baseEnv,
+          bindAddress,
           physicalProjectName: selection.projectName,
           physicalPorts: selection.ports,
         })

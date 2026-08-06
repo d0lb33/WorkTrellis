@@ -129,6 +129,9 @@ worktrellis services reconcile <stack> --from <compose-project>
 worktrellis services down --variant <compose-project> [--volumes]
 worktrellis services adopt --postgres-port <port>
 worktrellis services adopt --local.postgres-port <port>
+worktrellis services endpoint [show]
+worktrellis services endpoint set --bind-address <ip> --connect-host <host>
+worktrellis services endpoint clear
 ```
 
 `down` affects every stack declared by the current project and retains data
@@ -146,6 +149,14 @@ volumes instead. There is no force-reconcile option.
 configuration. An unqualified name such as `postgres` applies wherever that
 named port is used; `<stack>.<port>` scopes the override to one configured
 stack.
+
+`endpoint` shows or changes the machine-local publication and connection
+addresses for the active Docker context. `set` requires both addresses and
+records a fingerprint of the context endpoint so a later context change cannot
+silently reuse stale network settings. Non-loopback publication is explicit;
+wildcard addresses produce an exposure warning. Docker context selection,
+virtual-machine networking, firewalls, DNS, and tunnels are outside this
+command's contract.
 
 ## Database
 

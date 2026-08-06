@@ -20,7 +20,7 @@ function canBind(port: number, host: string): Promise<boolean> {
 
 function canBindUdp(port: number, host: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const socket = dgram.createSocket("udp4");
+    const socket = dgram.createSocket(net.isIP(host) === 6 ? "udp6" : "udp4");
     socket.unref();
     socket.once("error", () => {
       socket.close();
@@ -32,6 +32,29 @@ function canBindUdp(port: number, host: string): Promise<boolean> {
   });
 }
 
+/** Test the interfaces that can overlap a publication on `host`. */
+export async function isPortAvailableOn(
+  port: number,
+  host: string,
+  protocol: "tcp" | "udp" = "tcp",
+): Promise<boolean> {
+  const hosts =
+    host === "0.0.0.0"
+      ? ["0.0.0.0", "127.0.0.1"]
+      : host === "::"
+        ? ["::", "::1"]
+        : [host];
+
+  for (const candidate of hosts) {
+    const available =
+      protocol === "udp"
+        ? await canBindUdp(port, candidate)
+        : await canBind(port, candidate);
+    if (!available) return false;
+  }
+  return true;
+}
+
 /**
  * A port counts as available only when it binds on both the wildcard and
  * loopback addresses: Windows and Linux disagree about which of the two reports
@@ -41,14 +64,7 @@ export async function isPortAvailable(
   port: number,
   protocol: "tcp" | "udp" = "tcp",
 ): Promise<boolean> {
-  for (const host of ["0.0.0.0", "127.0.0.1"]) {
-    const available =
-      protocol === "udp"
-        ? await canBindUdp(port, host)
-        : await canBind(port, host);
-    if (!available) return false;
-  }
-  return true;
+  return isPortAvailableOn(port, "0.0.0.0", protocol);
 }
 
 export async function isPortInUse(

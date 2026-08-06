@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { endpointDoctorCheck } from "../src/commands/doctor";
 import { resolveInfoComposeProjects } from "../src/commands/info";
 import {
   buildStatusJson,
@@ -20,6 +21,14 @@ import { buildContext } from "../src/core/context";
 import { redactDiagnosticText, resolveEnv } from "../src/core/env-resolve";
 import { loadWorkspaceLocalConfig } from "../src/core/local-config";
 import { renderStack } from "../src/platform/compose-render";
+import {
+  endpointForDockerContext,
+  hostForUrl,
+  normalizeBindAddress,
+  normalizeConnectHost,
+} from "../src/platform/engine-endpoint";
+import { probePort } from "../src/platform/health";
+import { publicationConflicts } from "../src/platform/port-owner";
 import {
   describeMachineStackVariants,
   findRunningMachineStackVariants,
@@ -66,6 +75,7 @@ import {
   parseWindowsListeningProcessIds,
 } from "../src/util/proc";
 import { waitForPortClose } from "../src/platform/ports";
+import { sha256 } from "../src/util/hash";
 import { resolveUrl } from "../src/url/provider";
 import {
   parsePortlessSharingUrl,
@@ -1048,6 +1058,174 @@ setInterval(() => {}, 1000);
 });
 
 describe("WorkTrellis scoped Compose plans", () => {
+  it("resolves machine-local addresses for one Docker context", () => {
+    const context = {
+      name: "parallels-windows",
+      endpoint: "tcp://10.211.55.4:2375",
+      isRemote: true,
+    };
+    const defaults = endpointForDockerContext(context, {});
+    expect(defaults).toMatchObject({
+      contextName: "parallels-windows",
+      bindAddress: "127.0.0.1",
+      connectHost: "127.0.0.1",
+      configured: false,
+      stale: false,
+    });
+
+    const configured = endpointForDockerContext(context, {
+      dockerContexts: {
+        "parallels-windows": {
+          endpointFingerprint: sha256(context.endpoint),
+          bindAddress: "0.0.0.0",
+          connectHost: "windows-docker.test",
+        },
+      },
+    });
+    expect(configured).toMatchObject({
+      bindAddress: "0.0.0.0",
+      connectHost: "windows-docker.test",
+      configured: true,
+      stale: false,
+    });
+
+    const stale = endpointForDockerContext(context, {
+      dockerContexts: {
+        "parallels-windows": {
+          endpointFingerprint: sha256("tcp://10.211.55.3:2375"),
+          bindAddress: "10.211.55.3",
+          connectHost: "10.211.55.3",
+        },
+      },
+    });
+    expect(stale.stale).toBe(true);
+  });
+
+  it("validates bind and connect addresses without conflating them", () => {
+    expect(normalizeBindAddress(" 0.0.0.0 ")).toBe("0.0.0.0");
+    expect(normalizeBindAddress("::1")).toBe("::1");
+    expect(normalizeConnectHost(" Docker-VM.Test ")).toBe("docker-vm.test");
+    expect(hostForUrl("2001:db8::1")).toBe("[2001:db8::1]");
+    expect(() => normalizeBindAddress("docker-vm.test")).toThrow(/IPv4 or IPv6/);
+    expect(() => normalizeConnectHost("0.0.0.0")).toThrow(/reachable host/);
+    expect(() => normalizeConnectHost("http://docker-vm.test")).toThrow(
+      /without a scheme/,
+    );
+  });
+
+  it("renders the engine bind address into machine compatibility", () => {
+    const projectRoot = temporaryDirectory("worktrellis-compose-bind");
+    fs.writeFileSync(
+      path.join(projectRoot, "compose.yml"),
+      "services:\n  database:\n    image: postgres:16-alpine\n",
+    );
+    const spec = {
+      name: "infrastructure",
+      scope: "machine" as const,
+      files: ["compose.yml"],
+      ports: {
+        database: { service: "database", containerPort: 5432 },
+      },
+    };
+    const loopback = renderStack({
+      spec,
+      projectRoot,
+      identity: identity(),
+    });
+    const explicitLoopback = renderStack({
+      spec,
+      projectRoot,
+      identity: identity(),
+      bindAddress: "127.0.0.1",
+    });
+    const remote = renderStack({
+      spec,
+      projectRoot,
+      identity: identity(),
+      bindAddress: "0.0.0.0",
+    });
+
+    expect(loopback.definitionHash).toBe(
+      "ece3d74f0d0e6909aa60320730dbcd6f9eda50b3bf07a3a35cc5a6ed9149e2d6",
+    );
+    expect(loopback.stackId).toBe(
+      "worktrellis-machine-infrastructure-ece3d74f",
+    );
+    expect(explicitLoopback.stackId).toBe(loopback.stackId);
+    expect(remote.stackId).not.toBe(loopback.stackId);
+    expect(remote.files.at(-1)?.contents).toContain(
+      `0.0.0.0:${remote.ports.database}:5432/tcp`,
+    );
+  });
+
+  it("checks published-port conflicts on the configured interface", () => {
+    expect(
+      publicationConflicts(
+        "127.0.0.1:5432->5432/tcp",
+        5432,
+        "10.211.55.4",
+      ),
+    ).toBe(false);
+    expect(
+      publicationConflicts(
+        "10.211.55.4:5432->5432/tcp",
+        5432,
+        "10.211.55.4",
+      ),
+    ).toBe(true);
+    expect(
+      publicationConflicts(
+        "0.0.0.0:5432->5432/tcp",
+        5432,
+        "10.211.55.4",
+      ),
+    ).toBe(true);
+    expect(
+      publicationConflicts("[::]:5432->5432/tcp", 5432, "2001:db8::1"),
+    ).toBe(true);
+    expect(
+      publicationConflicts(
+        "10.211.55.4:5432->5432/udp",
+        5432,
+        "10.211.55.4",
+        "tcp",
+      ),
+    ).toBe(false);
+  });
+
+  it("brackets IPv6 hosts in HTTP health probes", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 204 }));
+
+    await expect(
+      probePort({ kind: "http", path: "/health" }, 8080, "2001:db8::1"),
+    ).resolves.toEqual({ reachable: true, detail: undefined });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://[2001:db8::1]:8080/health",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("warns when a service endpoint publishes on every host interface", () => {
+    const check = endpointDoctorCheck({
+      contextName: "parallels-windows",
+      endpointFingerprint: "fingerprint",
+      bindAddress: "0.0.0.0",
+      connectHost: "10.211.55.4",
+      isRemote: true,
+      configured: true,
+      stale: false,
+    });
+
+    expect(check).toMatchObject({
+      severity: "warn",
+      ok: false,
+      label: expect.stringContaining("wildcard address 0.0.0.0"),
+      fix: expect.stringContaining("specific host interface"),
+    });
+  });
+
   it("reports the exact Docker Compose project names expected for this workspace", () => {
     const projectRoot = temporaryDirectory("worktrellis-info-compose");
     fs.writeFileSync(
@@ -1288,8 +1466,53 @@ describe("WorkTrellis scoped Compose plans", () => {
 });
 
 describe("WorkTrellis resource isolation", () => {
+  it("uses the configured Compose host for every protocol endpoint", () => {
+    const compose: ComposeContext = {
+      host: "10.211.55.4",
+      stacks: {
+        standard: {
+          name: "standard",
+          scope: "machine",
+          compatibilityId: "worktrellis-machine-standard",
+          projectName: "worktrellis-machine-standard",
+          ports: { postgres: 5432, redis: 6379, minio: 9000 },
+        },
+      },
+      url: (_stack, _port, scheme = "http") =>
+        `${scheme}://10.211.55.4:9000`,
+    };
+    const resources = resolveResources({
+      identity: identity(),
+      compose,
+      adapters: {
+        database: postgresDatabase({
+          endpoint: { stack: "standard", port: "postgres" },
+          isolation: "database",
+          user: "postgres",
+          password: "postgres",
+        }),
+        cache: redisNamespace({
+          endpoint: { stack: "standard", port: "redis" },
+          isolation: "namespace",
+        }),
+        storage: s3Bucket({
+          endpoint: { stack: "standard", port: "minio" },
+          isolation: "bucket",
+          accessKey: "minioadmin",
+          secretKey: "minioadmin",
+        }),
+      },
+    });
+
+    expect(resources.database.host).toBe("10.211.55.4");
+    expect(resources.database.url).toContain("@10.211.55.4:5432/");
+    expect(resources.cache.url).toMatch(/^redis:\/\/10\.211\.55\.4:6379\//);
+    expect(resources.storage.endpoint).toBe("http://10.211.55.4:9000");
+  });
+
   it("resolves database, Redis namespace, and bucket from one workspace", () => {
     const compose: ComposeContext = {
+      host: "127.0.0.1",
       stacks: {
         standard: {
           name: "standard",
@@ -1324,19 +1547,14 @@ describe("WorkTrellis resource isolation", () => {
       },
     });
 
-    expect(resources.database.database).toBe(
-      "test_feature_test_deadbeef",
-    );
-    expect(resources.cache.prefix).toBe(
-      "{test:feature-test-deadbeef}",
-    );
-    expect(resources.storage.bucket).toBe(
-      "test-feature-test-deadbeef",
-    );
+    expect(resources.database.database).toBe("test_feature_test_deadbeef");
+    expect(resources.cache.prefix).toBe("{test:feature-test-deadbeef}");
+    expect(resources.storage.bucket).toBe("test-feature-test-deadbeef");
   });
 
   it("rejects missing project-owned resource credentials", () => {
     const compose: ComposeContext = {
+      host: "127.0.0.1",
       stacks: {
         standard: {
           name: "standard",
@@ -1382,6 +1600,7 @@ describe("WorkTrellis resource isolation", () => {
 
   it("keeps custom adapter names and resolved values intact", () => {
     const compose: ComposeContext = {
+      host: "127.0.0.1",
       stacks: {
         search: {
           name: "search",
@@ -1443,6 +1662,22 @@ describe("WorkTrellis package scripts", () => {
       "55432",
     ]);
     expect(parsed.flags.get("infrastructure.database-port")).toBe("55432");
+  });
+
+  it("parses Docker context endpoint addresses", () => {
+    const parsed = parseArgs([
+      "services",
+      "endpoint",
+      "set",
+      "--bind-address",
+      "0.0.0.0",
+      "--connect-host",
+      "10.211.55.4",
+    ]);
+    expect(parsed.subcommand).toBe("endpoint");
+    expect(parsed.positionals[1]).toBe("set");
+    expect(parsed.flags.get("bind-address")).toBe("0.0.0.0");
+    expect(parsed.flags.get("connect-host")).toBe("10.211.55.4");
   });
 
   it("uses the inherited package-manager JavaScript entry", () => {

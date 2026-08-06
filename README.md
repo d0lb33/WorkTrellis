@@ -100,7 +100,7 @@ pnpm dev   # -> worktrellis up
 | ---: | --- |
 | 1 | Resolve project, repository, and worktree identity from Git |
 | 2 | Start or reuse the correctly scoped Compose stacks |
-| 3 | Publish named service ports on `127.0.0.1` and detect conflicts |
+| 3 | Publish named service ports on loopback by default and detect conflicts |
 | 4 | Provision this worktree's database, cache namespace, and bucket |
 | 5 | Resolve the URL and generate the derived environment |
 | 6 | Supervise the configured processes as one group |
@@ -301,7 +301,7 @@ and requires an explicit reconcile-or-fresh lineage decision.
 | Guarantee | Detail |
 | --- | --- |
 | **Stable identity** | Every working tree, main checkout included, gets a deterministic project, repository, and workspace identity derived from Git |
-| **Deterministic ports** | Application and service ports are derived, not negotiated, published on `127.0.0.1`, and checked for conflicts before use |
+| **Deterministic ports** | Application and service ports are derived, not negotiated, published on loopback by default, and checked for conflicts before use |
 | **Scoped infrastructure** | Compose projects are scoped to the machine, the repository, or one workspace, and shared only when their definitions are compatible |
 | **Data isolation** | Each worktree receives its own logical database, cache namespace, and bucket inside shared protocol endpoints |
 | **Generated environment** | Derived variables are written to gitignored `.worktrellis/env` with documented precedence; the project's `.env` is never written |
@@ -406,7 +406,7 @@ database adapter makes sense. A Gotenberg service adapter does not.
 | `env` | The resolved environment, with `--explain`, `--json`, or `--print <key>` | read only |
 | `exec -- <cmd>` | Run an executable with the resolved worktree environment | your command |
 | `run <script>` | Run a package script with the resolved worktree environment | your script |
-| `services <sub>` | `up`, `down`, `restart`, `status`, `logs`, `adopt` | by subcommand |
+| `services <sub>` | `up`, `down`, `restart`, `status`, `logs`, `adopt`, `endpoint` | by subcommand |
 | `db <sub>` | `url`, `migrate`, `seed`, `reset` | by subcommand |
 | `self-check` | Verify the package stayed project agnostic | read only |
 
@@ -647,15 +647,17 @@ policy, machine-local port adoption, and database dump handling.
 
 ## Security
 
-- Generated Compose ports bind to loopback only.
+- Generated Compose ports bind to loopback by default. A machine-local Docker
+  context mapping may explicitly publish them on a local VM interface.
 - The project's base environment file is read only and never written back.
 - Normal diagnostics and structured output redact credentials and
   credential-bearing URLs.
 - Destructive operations stay explicit and never ride along with `up`, `info`,
   `doctor`, or `status`.
 - WorkTrellis is a local development coordinator. It is not intended to hold
-  production credentials, download production data, or expose container
-  services beyond the local host.
+  production credentials, download production data, or provide remote-sharing
+  infrastructure. Non-loopback VM publication must be explicitly configured
+  and restricted by the developer's VM network and firewall.
 
 Report a suspected vulnerability privately through the
 [security advisory form](https://github.com/d0lb33/WorkTrellis/security/advisories/new)

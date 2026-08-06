@@ -6,6 +6,10 @@ import { EXIT } from "../core/errors";
 import { prepareWorkspace } from "../core/prepare";
 import { readLiveRunState, readMachineConfig } from "../core/state";
 import { engineContext, engineVersion } from "../platform/engine";
+import {
+  isWildcardAddress,
+  type EngineEndpoint,
+} from "../platform/engine-endpoint";
 import { isPortInUse } from "../platform/ports";
 import { c, heading, info } from "../util/log";
 import { redactDiagnosticText } from "../core/env-resolve";
@@ -18,7 +22,7 @@ export interface DoctorOptions {
 }
 
 /** Like DoctorResult, but with "ok" added so passing checks share one shape. */
-type Check = Omit<DoctorResult, "severity"> & {
+export type Check = Omit<DoctorResult, "severity"> & {
   severity: "ok" | "warn" | "fail";
 };
 
@@ -32,6 +36,28 @@ function warn(label: string, detail?: string, fix?: string): Check {
 
 function fail(label: string, detail?: string, fix?: string): Check {
   return { ok: false, label, detail, fix, severity: "fail" };
+}
+
+export function endpointDoctorCheck(endpoint: EngineEndpoint): Check | null {
+  if (endpoint.stale) {
+    return fail(
+      `service endpoint for Docker context ${endpoint.contextName} is stale`,
+      "The context now points at a different Docker API endpoint, so its saved network addresses were not used.",
+      "Review the context, then run `worktrellis services endpoint set --bind-address <ip> --connect-host <host>` or `worktrellis services endpoint clear`.",
+    );
+  }
+  if (!endpoint.configured) return null;
+  if (isWildcardAddress(endpoint.bindAddress)) {
+    return warn(
+      `service endpoint ${endpoint.connectHost} publishes on wildcard address ${endpoint.bindAddress}`,
+      "Every network interface on the Docker host may expose these service ports.",
+      "Restrict access with the VM network and firewall, or bind to the specific host interface used by this client.",
+    );
+  }
+  return ok(
+    `service endpoint ${endpoint.connectHost}`,
+    `Docker publishes on ${endpoint.bindAddress}`,
+  );
 }
 
 export async function runDoctor(options: DoctorOptions): Promise<number> {
@@ -55,6 +81,7 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
     // Report the URL; never claim it. Diagnostics must not disturb a running app.
     peekUrl: true,
     writeSnapshotFile: false,
+    allowStaleEndpoint: true,
   });
 
   const { context, infrastructure, env, url } = prepared;
@@ -65,6 +92,9 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
       (await engineContext(infrastructure.engine))?.endpoint,
     ),
   );
+
+  const endpointCheck = endpointDoctorCheck(infrastructure.endpoint);
+  if (endpointCheck) checks.push(endpointCheck);
 
   const live = readLiveRunState(context.paths.state);
   const appUrl = live?.url ?? url.url;

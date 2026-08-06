@@ -1,6 +1,7 @@
 import net from "node:net";
 
 import type { PortProbe } from "../types";
+import { hostForUrl } from "./engine-endpoint";
 import { canConnect } from "./ports";
 
 export interface ProbeResult {
@@ -94,7 +95,7 @@ export async function probePort(
       return probeSmtp(port, host);
     case "http":
       return probeHttp(
-        `http://${host}:${port}${selected.path?.startsWith("/") ? selected.path : selected.path ? `/${selected.path}` : ""}`,
+        `http://${hostForUrl(host)}:${port}${selected.path?.startsWith("/") ? selected.path : selected.path ? `/${selected.path}` : ""}`,
       );
     case "postgres":
     case "tcp": {

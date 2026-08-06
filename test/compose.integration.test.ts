@@ -77,6 +77,15 @@ describe.skipIf(!readiness.ready)(
           identity,
           projectRoot: temporaryRoot,
           startIfStopped: true,
+          endpoint: {
+            contextName: "integration",
+            endpointFingerprint: null,
+            bindAddress: "0.0.0.0",
+            connectHost: "127.0.0.1",
+            isRemote: false,
+            configured: true,
+            stale: false,
+          },
         },
       );
 
@@ -91,6 +100,26 @@ describe.skipIf(!readiness.ready)(
       expect(infrastructure.compose.url("web", "http")).toMatch(
         /^http:\/\/127\.0\.0\.1:\d+$/,
       );
+      const containerId = execFileSync(
+        infrastructure.engine.cli,
+        [
+          "ps",
+          "-q",
+          "--filter",
+          `label=com.docker.compose.project=${infrastructure.statuses[0]!.stackId}`,
+          "--filter",
+          "label=com.docker.compose.service=web",
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const bindings = JSON.parse(
+        execFileSync(
+          infrastructure.engine.cli,
+          ["inspect", containerId, "--format", "{{json .HostConfig.PortBindings}}"],
+          { encoding: "utf8" },
+        ),
+      ) as Record<string, Array<{ HostIp: string; HostPort: string }>>;
+      expect(bindings["80/tcp"]?.[0]?.HostIp).toBe("0.0.0.0");
     }, 180_000);
 
     it("rejects host ports published by the project Compose file", async () => {

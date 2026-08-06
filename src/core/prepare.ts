@@ -39,6 +39,8 @@ export async function prepareWorkspace(options: {
   peekUrl?: boolean;
   writeSnapshotFile?: boolean;
   allowNewMachineVariants?: readonly string[];
+  /** Diagnostics may inspect a stale endpoint mapping without using it. */
+  allowStaleEndpoint?: boolean;
 }): Promise<PreparedWorkspace> {
   const context = await buildContext(options);
 
@@ -48,6 +50,7 @@ export async function prepareWorkspace(options: {
     baseEnv: Object.freeze(Object.fromEntries(context.baseEnv)),
     startIfStopped: options.startServices ?? false,
     allowNewMachineVariants: options.allowNewMachineVariants,
+    allowStaleEndpoint: options.allowStaleEndpoint,
   });
 
   // Reuse what a live run already registered, when there is one.

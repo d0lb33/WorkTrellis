@@ -98,6 +98,7 @@ export default {
   env: ({ workspace, compose }) => ({
     SMOKE_REPO_KEY: workspace.repoKey,
     SMOKE_WORKSPACE_SLUG: workspace.slug,
+    SMOKE_COMPOSE_HOST: compose.host,
     SMOKE_MACHINE_PROJECT: compose.stacks.machine.projectName,
     SMOKE_MACHINE_PORT: String(compose.stacks.machine.ports.http),
     SMOKE_REPOSITORY_PROJECT: compose.stacks.repository.projectName,
@@ -239,6 +240,8 @@ export default {
 
       const mainEnv = envSnapshot(main);
       const linkedEnv = envSnapshot(linked);
+      expect(mainEnv.SMOKE_COMPOSE_HOST).toBe("127.0.0.1");
+      expect(linkedEnv.SMOKE_COMPOSE_HOST).toBe("127.0.0.1");
       expect(linkedEnv.SMOKE_REPO_KEY).toBe(mainEnv.SMOKE_REPO_KEY);
       expect(linkedEnv.SMOKE_MACHINE_PROJECT).toBe(
         mainEnv.SMOKE_MACHINE_PROJECT,

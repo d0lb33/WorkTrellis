@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import net from "node:net";
 
 import {
   IS_WINDOWS,
@@ -6,7 +7,7 @@ import {
   run,
 } from "../util/proc";
 import type { ContainerEngine } from "./engine";
-import { isPortAvailable } from "./ports";
+import { isPortAvailableOn } from "./ports";
 
 /**
  * Answering "who holds this port" rather than silently choosing another one.
@@ -52,16 +53,61 @@ async function containerPortRows(
     });
 }
 
-function rowPublishesPort(row: ContainerPortRow, port: number): boolean {
+function publicationAddressesOverlap(
+  publishedAddress: string,
+  bindAddress: string,
+): boolean {
+  if (publishedAddress === "*") return true;
+  const publishedFamily = net.isIP(publishedAddress);
+  const requestedFamily = net.isIP(bindAddress);
+  if (publishedFamily === 0 || requestedFamily === 0) return true;
+  if (publishedFamily !== requestedFamily) return false;
+  return (
+    publishedAddress === bindAddress ||
+    publishedAddress === (publishedFamily === 6 ? "::" : "0.0.0.0") ||
+    bindAddress === (requestedFamily === 6 ? "::" : "0.0.0.0")
+  );
+}
+
+export function publicationConflicts(
+  mapping: string,
+  port: number,
+  bindAddress: string,
+  protocol: "tcp" | "udp" = "tcp",
+): boolean {
+  const trimmed = mapping.trim();
+  if (!trimmed.endsWith(`/${protocol}`)) return false;
+  const arrow = trimmed.indexOf("->");
+  if (arrow < 0) return false;
+
+  const published = trimmed.slice(0, arrow);
+  const separator = published.lastIndexOf(":");
+  if (separator < 0) return false;
+  const range = /^(\d+)(?:-(\d+))?$/.exec(published.slice(separator + 1));
+  if (!range) return false;
+
+  const start = Number.parseInt(range[1] ?? "", 10);
+  const end = range[2] ? Number.parseInt(range[2], 10) : start;
+  if (!Number.isFinite(start) || port < start || port > end) return false;
+
+  const rawAddress = published.slice(0, separator);
+  const publishedAddress =
+    rawAddress.startsWith("[") && rawAddress.endsWith("]")
+      ? rawAddress.slice(1, -1)
+      : rawAddress;
+  return publicationAddressesOverlap(publishedAddress, bindAddress);
+}
+
+function rowPublishesPort(
+  row: ContainerPortRow,
+  port: number,
+  bindAddress: string,
+  protocol: "tcp" | "udp",
+): boolean {
   // Port strings look like "127.0.0.1:5432->5432/tcp, 1110/tcp" and may use a
   // published range such as "127.0.0.1:9000-9001->9000-9001/tcp".
   for (const mapping of row.ports.split(",")) {
-    const match = /:(\d+)(?:-(\d+))?->/.exec(mapping.trim());
-    if (!match) continue;
-
-    const start = Number.parseInt(match[1] ?? "", 10);
-    const end = match[2] ? Number.parseInt(match[2], 10) : start;
-    if (Number.isFinite(start) && port >= start && port <= end) return true;
+    if (publicationConflicts(mapping, port, bindAddress, protocol)) return true;
   }
   return false;
 }
@@ -146,13 +192,18 @@ export async function whoHolds(
     engine: ContainerEngine;
     ourStackIds: string[];
     protocol?: "tcp" | "udp";
+    bindAddress?: string;
+    /** Remote engine ports must not be compared with listeners on this host. */
+    checkLocalProcesses?: boolean;
   },
 ): Promise<PortOwner> {
+  const protocol = options.protocol ?? "tcp";
+  const bindAddress = options.bindAddress ?? "0.0.0.0";
   // Containers first: with a remote engine the port is published on the remote
   // host, so a local bind probe would wrongly report it free.
   const rows = await containerPortRows(options.engine);
   for (const row of rows) {
-    if (!rowPublishesPort(row, port)) continue;
+    if (!rowPublishesPort(row, port, bindAddress, protocol)) continue;
     if (options.ourStackIds.includes(row.project)) {
       return { kind: "our-stack", stackId: row.project, container: row.names };
     }
@@ -163,8 +214,11 @@ export async function whoHolds(
     };
   }
 
-  const protocol = options.protocol ?? "tcp";
-  if (await isPortAvailable(port, protocol)) return { kind: "free" };
+  if (options.checkLocalProcesses === false) return { kind: "free" };
+
+  if (await isPortAvailableOn(port, bindAddress, protocol)) {
+    return { kind: "free" };
+  }
 
   return foreignHolder(port, protocol);
 }

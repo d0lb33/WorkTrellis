@@ -10,6 +10,12 @@ export interface ContainerEngine {
   compose: string[];
 }
 
+export interface DockerContextInfo {
+  name: string;
+  endpoint: string;
+  isRemote: boolean;
+}
+
 const CANDIDATES = [
   { name: "docker" as const, legacy: "docker-compose" },
   { name: "podman" as const, legacy: "podman-compose" },
@@ -91,7 +97,7 @@ export async function engineVersion(engine: ContainerEngine): Promise<string> {
  */
 export async function engineContext(
   engine: ContainerEngine,
-): Promise<{ name: string; endpoint: string; isRemote: boolean } | null> {
+): Promise<DockerContextInfo | null> {
   if (engine.name !== "docker") return null;
 
   const result = await run(

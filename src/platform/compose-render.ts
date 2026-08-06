@@ -45,12 +45,15 @@ export function renderStack(options: {
   projectRoot: string;
   identity: WorkspaceIdentity;
   baseEnv?: Readonly<Record<string, string>>;
+  /** Address on the engine host used for generated port publications. */
+  bindAddress?: string;
   /** Selected physical lineage for a machine stack. */
   physicalProjectName?: string;
   /** Existing lineage ports retained during reconciliation. */
   physicalPorts?: Readonly<Record<string, number>>;
 }): RenderedStack {
   const { spec, projectRoot, identity } = options;
+  const bindAddress = options.bindAddress ?? "127.0.0.1";
   const portSpecs = effectivePortSpecs(spec);
   const definitionFiles: RenderedComposeFile[] = [];
   const composeEnv = resolveComposeEnv(spec, options.baseEnv ?? {});
@@ -72,6 +75,10 @@ export function renderStack(options: {
     stableStringify({
       files: definitionFiles.map((file) => file.contents),
       ports: portSpecs,
+      // Preserve compatibility with stacks rendered before configurable engine
+      // endpoints existed. Only a non-default publication address changes the
+      // rendered Compose definition.
+      ...(bindAddress === "127.0.0.1" ? {} : { bindAddress }),
       env: composeEnv,
       ...(Object.keys(spec.volumeDataVersions ?? {}).length > 0
         ? { volumeDataVersions: spec.volumeDataVersions }
@@ -99,7 +106,7 @@ export function renderStack(options: {
     ...definitionFiles,
     {
       name: "99-worktrellis-ports.compose.yml",
-      contents: renderPortOverride(portSpecs, ports),
+      contents: renderPortOverride(portSpecs, ports, bindAddress),
     },
   ];
   const specHash = sha256(
@@ -205,12 +212,14 @@ function resolveHostPorts(
 function renderPortOverride(
   specs: Record<string, ComposePortSpec>,
   ports: Record<string, number>,
+  bindAddress: string,
 ): string {
   const services: Record<string, { ports: string[] }> = {};
   for (const [name, spec] of Object.entries(specs)) {
     const service = services[spec.service] ?? { ports: [] };
+    const host = bindAddress.includes(":") ? `[${bindAddress}]` : bindAddress;
     service.ports.push(
-      `127.0.0.1:${ports[name]}:${spec.containerPort}/${spec.protocol ?? "tcp"}`,
+      `${host}:${ports[name]}:${spec.containerPort}/${spec.protocol ?? "tcp"}`,
     );
     services[spec.service] = service;
   }

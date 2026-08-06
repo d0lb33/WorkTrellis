@@ -13,6 +13,7 @@ import type {
   WorkspaceIdentity,
 } from "../types";
 import { WorkTrellisError } from "../core/errors";
+import { hostForUrl } from "../platform/engine-endpoint";
 import {
   buildBucketName,
   buildDatabaseName,
@@ -134,7 +135,7 @@ export function redisNamespace(
         port: endpoint.hostPort,
         database,
         prefix: buildRedisPrefix(workspace.project, workspace.slug),
-        url: `redis://${endpoint.host}:${endpoint.hostPort}/${database}`,
+        url: `redis://${hostForUrl(endpoint.host)}:${endpoint.hostPort}/${database}`,
       };
     },
     describe: (resource) =>
@@ -179,7 +180,6 @@ export function resolveResources<
   compose: ComposeContext;
   identity: WorkspaceIdentity;
   baseEnv?: Readonly<Record<string, string>>;
-  host?: string;
 }): ResolvedResources<TAdapters> {
   const adapters = options.adapters ?? ({} as TAdapters);
   const resources: Record<string, unknown> = {};
@@ -188,7 +188,6 @@ export function resolveResources<
     const endpoint = resolveEndpoint(
       options.compose,
       adapter.endpoint,
-      options.host,
     );
     resources[name] = adapter.resolve({
       workspace: options.identity,
@@ -209,7 +208,6 @@ export async function provisionResources(options: {
   projectRoot: string;
   baseEnv?: Readonly<Record<string, string>>;
   skip?: string[];
-  host?: string;
 }): Promise<void> {
   const skipped = new Set(options.skip ?? []);
   for (const [name, adapter] of Object.entries(options.adapters ?? {})) {
@@ -217,7 +215,6 @@ export async function provisionResources(options: {
     const endpoint = resolveEndpoint(
       options.compose,
       adapter.endpoint,
-      options.host,
     );
     await provisionOne(adapter, options.resources[name], {
       workspace: options.identity,
@@ -317,7 +314,6 @@ async function ensureObjectStorageBucket(resource: S3Bucket): Promise<void> {
 function resolveEndpoint(
   compose: ComposeContext,
   endpoint: ResourceEndpoint,
-  host = "127.0.0.1",
 ): ResolvedResourceEndpoint {
   const stack = compose.stacks[endpoint.stack];
   const hostPort = stack?.ports[endpoint.port];
@@ -329,9 +325,10 @@ function resolveEndpoint(
 
   return {
     ...endpoint,
-    host,
+    host: compose.host,
     hostPort,
-    url: (scheme = "http") => `${scheme}://${host}:${hostPort}`,
+    url: (scheme = "http") =>
+      `${scheme}://${hostForUrl(compose.host)}:${hostPort}`,
   };
 }
 
@@ -344,7 +341,7 @@ function postgresUrl(options: {
 }): string {
   return `postgresql://${encodeURIComponent(options.user)}:${encodeURIComponent(
     options.password,
-  )}@${options.host}:${options.port}/${encodeURIComponent(options.database)}`;
+  )}@${hostForUrl(options.host)}:${options.port}/${encodeURIComponent(options.database)}`;
 }
 
 function resolveString(

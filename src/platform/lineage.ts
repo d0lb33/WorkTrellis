@@ -110,6 +110,7 @@ export async function assessReconciliation(options: {
   identity: WorkspaceIdentity;
   baseEnv: Readonly<Record<string, string>>;
   sourceProject: string;
+  bindAddress?: string;
 }): Promise<{ safe: boolean; reason?: string }> {
   try {
     const natural = renderStack({
@@ -117,6 +118,7 @@ export async function assessReconciliation(options: {
       projectRoot: options.projectRoot,
       identity: options.identity,
       baseEnv: options.baseEnv,
+      bindAddress: options.bindAddress,
     });
     const ports = readStackPorts(options.sourceProject, natural.portSpecs);
     const desired = renderStack({
@@ -124,6 +126,7 @@ export async function assessReconciliation(options: {
       projectRoot: options.projectRoot,
       identity: options.identity,
       baseEnv: options.baseEnv,
+      bindAddress: options.bindAddress,
       physicalProjectName: options.sourceProject,
       physicalPorts: ports,
     });
@@ -161,7 +164,7 @@ export function readStackPorts(
   const result: Record<string, number> = {};
   for (const [name, spec] of Object.entries(specs)) {
     for (const publication of override?.services?.[spec.service]?.ports ?? []) {
-      const match = /^(?:127\.0\.0\.1|\[::1\]):(\d+):(\d+)\/(tcp|udp)$/.exec(
+      const match = /^(?:\[[^\]]+\]|[^:]+):(\d+):(\d+)\/(tcp|udp)$/.exec(
         publication,
       );
       if (
@@ -189,12 +192,14 @@ export async function reconcileMachineLineage(options: {
   identity: WorkspaceIdentity;
   baseEnv: Readonly<Record<string, string>>;
   sourceProject: string;
+  bindAddress?: string;
 }): Promise<RenderedStack> {
   const desiredNatural = renderStack({
     spec: options.spec,
     projectRoot: options.projectRoot,
     identity: options.identity,
     baseEnv: options.baseEnv,
+    bindAddress: options.bindAddress,
   });
   if (options.spec.scope !== "machine") {
     throw new WorkTrellisError("Only machine-scoped stacks can be reconciled.");
@@ -256,6 +261,7 @@ export async function reconcileMachineLineage(options: {
     projectRoot: options.projectRoot,
     identity: options.identity,
     baseEnv: options.baseEnv,
+    bindAddress: options.bindAddress,
     physicalProjectName: options.sourceProject,
     physicalPorts: ports,
   });

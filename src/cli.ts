@@ -46,7 +46,7 @@ ${c.bold("Environment:")}
   run <script>             Run a package script with the resolved environment
 
 ${c.bold("Infrastructure:")}
-  services up|down|restart|status|logs|variants|reconcile|adopt
+  services up|down|restart|status|logs|variants|reconcile|adopt|endpoint
   db url|migrate|seed|reset
 
 ${c.bold("Introspection:")}
@@ -181,6 +181,9 @@ const COMMANDS: Record<string, CommandHandler> = {
       from: flagString(args, "from"),
       newVariants: flagList(args, "new-variant"),
       portOverrides: collectPortOverrides(args),
+      endpointAction: args.positionals[1],
+      bindAddress: flagString(args, "bind-address"),
+      connectHost: flagString(args, "connect-host"),
     }),
 };
 

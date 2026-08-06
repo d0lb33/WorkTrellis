@@ -6,7 +6,16 @@ import {
   writeMachineConfig,
 } from "../core/state";
 import { c, heading, info, success, table, warn } from "../util/log";
-import { detectEngine } from "../platform/engine";
+import { assertDaemonRunning, detectEngine } from "../platform/engine";
+import {
+  clearActiveDockerEndpoint,
+  inspectEngineEndpoint,
+  isLoopbackAddress,
+  isWildcardAddress,
+  resolveEngineEndpoint,
+  setActiveDockerEndpoint,
+  type EngineEndpoint,
+} from "../platform/engine-endpoint";
 import {
   assertKnownStack,
   ensureInfrastructure,
@@ -38,6 +47,29 @@ export interface ServicesOptions {
   from?: string;
   newVariants?: string[];
   portOverrides?: Record<string, number>;
+  endpointAction?: string;
+  bindAddress?: string;
+  connectHost?: string;
+}
+
+function renderEndpoint(endpoint: EngineEndpoint): void {
+  table([
+    ["Docker context", endpoint.contextName ?? "unavailable"],
+    ["configuration", endpoint.configured ? "machine override" : "loopback default"],
+    ["bind address", endpoint.bindAddress],
+    ["connect host", endpoint.connectHost],
+  ]);
+  if (endpoint.stale) {
+    warn("This mapping is stale because the Docker context endpoint changed.");
+  } else if (isWildcardAddress(endpoint.bindAddress)) {
+    warn(
+      `Docker will publish declared service ports on every ${endpoint.bindAddress === "::" ? "IPv6" : "IPv4"} interface. Restrict access with the VM network and firewall.`,
+    );
+  } else if (!isLoopbackAddress(endpoint.bindAddress)) {
+    warn(
+      `Docker will publish declared service ports on ${endpoint.bindAddress}. Ensure that address is limited to the development VM network.`,
+    );
+  }
 }
 
 function renderStatuses(statuses: StackStatus[]): void {
@@ -68,6 +100,44 @@ function renderStatuses(statuses: StackStatus[]): void {
 }
 
 export async function runServices(options: ServicesOptions): Promise<number> {
+  if (options.subcommand === "endpoint") {
+    const engine = await detectEngine();
+    const action = options.endpointAction ?? "show";
+    if (action === "show") {
+      heading("Compose service endpoint");
+      renderEndpoint(await inspectEngineEndpoint(engine));
+      return EXIT.ok;
+    }
+    if (action === "set") {
+      if (!options.bindAddress || !options.connectHost) {
+        usageError(
+          "`services endpoint set` requires both `--bind-address` and `--connect-host`.",
+        );
+      }
+      await assertDaemonRunning(engine);
+      const endpoint = await setActiveDockerEndpoint({
+        engine,
+        bindAddress: options.bindAddress,
+        connectHost: options.connectHost,
+      });
+      success(`Recorded the endpoint for Docker context ${endpoint.contextName}.`);
+      renderEndpoint(endpoint);
+      info("");
+      info(c.gray(`  Stored in ${homePaths.machineConfig()}.`));
+      return EXIT.ok;
+    }
+    if (action === "clear") {
+      const contextName = await clearActiveDockerEndpoint(engine);
+      success(`Cleared the endpoint for Docker context ${contextName}.`);
+      info("  Declared service ports will use loopback by default.");
+      return EXIT.ok;
+    }
+    usageError(
+      `Unknown services endpoint action ${JSON.stringify(action)}.`,
+      "Try: worktrellis services endpoint [show|set|clear]",
+    );
+  }
+
   const context = await buildContext(options);
   const specs = context.config.compose;
   const baseEnv = Object.freeze(Object.fromEntries(context.baseEnv));
@@ -88,6 +158,14 @@ export async function runServices(options: ServicesOptions): Promise<number> {
 
       heading("Compose stacks");
       renderStatuses(result.statuses);
+      if (result.endpoint.configured) {
+        info("");
+        info(
+          c.gray(
+            `  service endpoint: bind ${result.endpoint.bindAddress}, connect ${result.endpoint.connectHost}`,
+          ),
+        );
+      }
       if (result.remoteEngineNote) {
         info("");
         info(c.gray(`  ${result.remoteEngineNote}`));
@@ -131,6 +209,7 @@ export async function runServices(options: ServicesOptions): Promise<number> {
 
     case "down": {
       const engine = await detectEngine();
+      const endpoint = await resolveEngineEndpoint(engine);
       if (options.variant) {
         const spec = specs.find((entry) =>
           options.variant!.startsWith(`worktrellis-machine-${entry.name}-`),
@@ -161,6 +240,7 @@ export async function runServices(options: ServicesOptions): Promise<number> {
           projectRoot: context.projectRoot,
           identity: context.identity,
           baseEnv,
+          bindAddress: endpoint.bindAddress,
         });
         if (!/^[a-z0-9][a-z0-9_-]*$/.test(options.variant)) {
           usageError(`Invalid Compose project name ${JSON.stringify(options.variant)}.`);
@@ -179,6 +259,7 @@ export async function runServices(options: ServicesOptions): Promise<number> {
           projectRoot: context.projectRoot,
           identity: context.identity,
           baseEnv,
+          bindAddress: endpoint.bindAddress,
           physicalProjectName: options.variant,
           physicalPorts: readStackPorts(options.variant, desired.portSpecs),
         });
@@ -198,6 +279,7 @@ export async function runServices(options: ServicesOptions): Promise<number> {
           context.projectRoot,
           context.identity,
           baseEnv,
+          endpoint.bindAddress,
         );
         info(`  stopping ${c.cyan(stack.rendered.stackId)}`);
         await stack.down({ volumes: options.volumes });
@@ -212,6 +294,7 @@ export async function runServices(options: ServicesOptions): Promise<number> {
 
     case "variants": {
       const engine = await detectEngine();
+      const endpoint = await resolveEngineEndpoint(engine);
       const selectedSpecs = options.service
         ? specs.filter((spec) => spec.name === options.service)
         : specs.filter((spec) => spec.scope === "machine");
@@ -226,6 +309,7 @@ export async function runServices(options: ServicesOptions): Promise<number> {
           context.projectRoot,
           context.identity,
           baseEnv,
+          endpoint.bindAddress,
         );
         results.push({
           stack: spec.name,
@@ -275,6 +359,7 @@ export async function runServices(options: ServicesOptions): Promise<number> {
       const spec = specs.find((entry) => entry.name === name);
       if (!spec) usageError(`This project does not declare stack "${name}".`);
       const engine = await detectEngine();
+      const endpoint = await resolveEngineEndpoint(engine);
       const rendered = await reconcileMachineLineage({
         engine,
         spec,
@@ -282,6 +367,7 @@ export async function runServices(options: ServicesOptions): Promise<number> {
         identity: context.identity,
         baseEnv,
         sourceProject: options.from,
+        bindAddress: endpoint.bindAddress,
       });
       success(`Selected ${rendered.stackId} for ${rendered.compatibilityId}.`);
       return EXIT.ok;
@@ -289,6 +375,7 @@ export async function runServices(options: ServicesOptions): Promise<number> {
 
     case "restart": {
       const engine = await detectEngine();
+      const endpoint = await resolveEngineEndpoint(engine);
       for (const spec of specs) {
         const stack = stackFor(
           engine,
@@ -296,6 +383,7 @@ export async function runServices(options: ServicesOptions): Promise<number> {
           context.projectRoot,
           context.identity,
           baseEnv,
+          endpoint.bindAddress,
         );
         info(`  restarting ${c.cyan(stack.rendered.stackId)}`);
         await stack.down();
@@ -315,6 +403,7 @@ export async function runServices(options: ServicesOptions): Promise<number> {
 
     case "logs": {
       const engine = await detectEngine();
+      const endpoint = await resolveEngineEndpoint(engine);
       const stacks = specs.map((spec) => ({
         spec,
         stack: stackFor(
@@ -323,6 +412,7 @@ export async function runServices(options: ServicesOptions): Promise<number> {
           context.projectRoot,
           context.identity,
           baseEnv,
+          endpoint.bindAddress,
         ),
       }));
       const selected = options.service
@@ -363,7 +453,7 @@ export async function runServices(options: ServicesOptions): Promise<number> {
     default:
       return usageError(
         `Unknown services subcommand "${options.subcommand}".`,
-        "Try: up, down, restart, status, logs, variants, reconcile, adopt",
+        "Try: up, down, restart, status, logs, variants, reconcile, adopt, endpoint",
       );
   }
 }

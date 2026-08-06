@@ -28,6 +28,8 @@ const VALUE_EXPECTED = new Set([
   "tenant",
   "new-variant",
   "variant",
+  "bind-address",
+  "connect-host",
 ]);
 
 function expectsValue(flag: string): boolean {
