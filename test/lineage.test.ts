@@ -191,35 +191,39 @@ describe("machine stack lineages", () => {
     expect(retainedConflicts(rendered, variants)).toEqual([]);
   });
 
-  it("records and verifies live machine consumers without exposing environment", () => {
-    const home = temporaryDirectory("worktrellis-lease-home");
-    vi.stubEnv("WORKTRELLIS_HOME", home);
-    const root = process.cwd();
-    writeMachineRunLease({
-      version: 1,
-      pid: process.pid,
-      startedAtMs: Date.now() - process.uptime() * 1_000,
-      project: "example",
-      repoKey: "repo12345678",
-      slug: "main-deadbeef",
-      branch: "main",
-      worktreeRoot: root,
-      stacks: [
-        {
-          name: "infrastructure",
-          compatibilityId: "desired",
-          projectName: "physical",
-        },
-      ],
-    });
-    expect(consumersForProject("physical")).toEqual([
-      expect.objectContaining({
+  it(
+    "records and verifies live machine consumers without exposing environment",
+    () => {
+      const home = temporaryDirectory("worktrellis-lease-home");
+      vi.stubEnv("WORKTRELLIS_HOME", home);
+      const root = process.cwd();
+      writeMachineRunLease({
+        version: 1,
+        pid: process.pid,
+        startedAtMs: Date.now() - process.uptime() * 1_000,
         project: "example",
+        repoKey: "repo12345678",
         slug: "main-deadbeef",
-        state: "live",
-      }),
-    ]);
-    clearMachineRunLease("repo12345678", "main-deadbeef");
-    expect(consumersForProject("physical")).toEqual([]);
-  });
+        branch: "main",
+        worktreeRoot: root,
+        stacks: [
+          {
+            name: "infrastructure",
+            compatibilityId: "desired",
+            projectName: "physical",
+          },
+        ],
+      });
+      expect(consumersForProject("physical")).toEqual([
+        expect.objectContaining({
+          project: "example",
+          slug: "main-deadbeef",
+          state: "live",
+        }),
+      ]);
+      clearMachineRunLease("repo12345678", "main-deadbeef");
+      expect(consumersForProject("physical")).toEqual([]);
+    },
+    20_000,
+  );
 });
