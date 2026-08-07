@@ -4,6 +4,7 @@
 
 - Minimal shape
 - Compose stacks and ports
+- Docker context service endpoints
 - Built-in resources
 - Generated environment
 - Processes
@@ -116,8 +117,11 @@ Port names are project vocabulary. The service name must match merged Compose.
 Omit `hostPort` for deterministic allocation. Use a fixed `hostPort` only when
 an external tool truly requires it and accept the collision risk.
 
-WorkTrellis publishes declared ports on loopback. Remove corresponding host
-port mappings from the project Compose files.
+WorkTrellis publishes declared ports on loopback by default. Remove
+corresponding host port mappings from the project Compose files. Use
+`compose.host` for the resolved connection address and
+`compose.url(stack, port, scheme?)` for a complete endpoint; do not rebuild
+either from a Docker API URL.
 
 `volumeDataVersions` is keyed by the project-owned Compose volume name, not the
 engine-prefixed physical volume name. Use it only for named volumes whose data
@@ -128,6 +132,51 @@ anonymous volumes cannot be reconciled.
 
 This additive field does not replace Compose migrations or data upgrades.
 WorkTrellis never copies, merges, or deletes volume contents.
+
+## Docker context service endpoints
+
+Docker owns context selection through `docker context use`, `DOCKER_CONTEXT`,
+and its normal configuration. When the active Docker context points to a local
+VM or another engine host, inspect both sides of service reachability:
+
+- `bindAddress` is an IP address on the engine host where Docker publishes
+  WorkTrellis-managed ports.
+- `connectHost` is the hostname or IP address used by the machine running
+  WorkTrellis to reach those ports.
+
+Inspect before changing:
+
+```bash
+docker context show
+docker context inspect
+worktrellis services endpoint show
+```
+
+Record a machine-local mapping only after verifying the VM interface and route:
+
+```bash
+worktrellis services endpoint set \
+  --bind-address 10.211.55.4 \
+  --connect-host 10.211.55.4
+```
+
+Prefer an exact engine-host interface. Use `0.0.0.0` or `::` only when the
+engine cannot publish on the exact interface and the developer has confirmed
+the VM network and firewall restrict access. Wildcard publication exposes each
+declared service port on every matching interface.
+
+The mapping belongs under `WORKTRELLIS_HOME`, keyed and fingerprinted by Docker
+context. Never put it in `worktrellis.config.ts`, `.env`, or Compose. A context
+whose Docker API endpoint changes becomes stale and must be reviewed, then set
+again or cleared explicitly:
+
+```bash
+worktrellis services endpoint clear
+```
+
+The Docker API endpoint, `bindAddress`, and `connectHost` are separate
+concepts. WorkTrellis may coordinate the latter two, but it does not configure
+the context, VM lifecycle, firewall, DNS, tunnels, or remote bind mounts.
 
 ## Built-in resources
 

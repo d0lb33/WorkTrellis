@@ -5,6 +5,7 @@
 - Ownership matrix
 - Decision tests
 - URL and Tailscale boundary
+- Container-engine endpoint boundary
 - Machine lineage boundary
 - Adapter boundary
 - Environment boundary
@@ -16,12 +17,15 @@
 | --- | --- |
 | Git repository and worktree identity | WorkTrellis |
 | Deterministic app and named host ports | WorkTrellis |
+| Context-scoped service bind and connection addresses | WorkTrellis |
 | Machine, repository, and workspace scope | WorkTrellis |
 | Machine compatibility identity and physical lineage selection | WorkTrellis |
 | Logical database, namespace, or bucket isolation | WorkTrellis adapters |
 | Generated per-worktree environment | WorkTrellis |
 | Foreground local process supervision | WorkTrellis |
 | Services, images, networks, volumes, builds | Project Compose |
+| Docker context selection and API endpoint | Docker |
+| VM lifecycle, networking, firewall, DNS, tunnels | Developer and VM platform |
 | Container health checks | Project Compose |
 | Package scripts and task pipelines | Project |
 | Schema migrations and seeds | Project hooks and tools |
@@ -69,6 +73,19 @@ WorkTrellis must not:
 - create its own proxy or tunnel.
 
 Tailscale is a Portless mode, not a third WorkTrellis routing subsystem.
+
+## Container-engine endpoint boundary
+
+WorkTrellis may inspect the active Docker context, fingerprint its API endpoint,
+record a machine-local bind address and connection host, publish declared
+Compose ports on that bind address, and use the connection host in generated
+resource URLs and health checks.
+
+WorkTrellis must not select or rewrite Docker contexts, assume the Docker API
+endpoint is a service address, start or configure a VM, create forwarding
+rules, change firewalls or DNS, implement tunnels, or translate remote bind
+mount paths. Prefer an exact engine-host interface; wildcard publication is an
+explicit exposure decision owned by the developer and their VM network policy.
 
 ## Machine lineage boundary
 

@@ -6,6 +6,7 @@
 - Static checks
 - Read-only diagnostics
 - Runtime validation
+- Docker context endpoint validation
 - Machine-lineage validation
 - Two-worktree validation
 - Phone-access validation
@@ -51,6 +52,7 @@ worktrellis info
 worktrellis env --explain
 worktrellis services status
 worktrellis services variants
+worktrellis services endpoint show
 worktrellis status
 ```
 
@@ -68,6 +70,7 @@ Confirm:
 - distinct logical resource names;
 - no critical generated value is shadowed by `.env`;
 - required tools and daemons are reachable; and
+- the active Docker context has the intended non-stale endpoint mapping; and
 - stopped, running, or orphaned state is truthful.
 
 For every machine-scoped stack, confirm the selected physical lineage,
@@ -111,6 +114,34 @@ worktrellis down
 ```
 
 The app must honor the deterministic direct host and port.
+
+## Docker context endpoint validation
+
+Run this when Docker uses a non-default context or VM-hosted engine. Confirm
+the active context separately from the service mapping:
+
+```bash
+docker context show
+docker context inspect
+worktrellis services endpoint show
+worktrellis doctor
+worktrellis info --json
+```
+
+Verify that:
+
+- `bindAddress` is an IP address present on the engine host;
+- `connectHost` is reachable from the machine running WorkTrellis;
+- the mapping fingerprint is current for the active Docker API endpoint;
+- generated database, Redis, S3, HTTP, and raw TCP endpoints use
+  `connectHost`, including bracketed IPv6 URLs where applicable;
+- port-conflict checks are scoped to the configured bind interface; and
+- wildcard publication has an explicit VM-network and firewall decision.
+
+Start the project only when authorized, then verify at least one declared
+service through its generated environment value from the WorkTrellis machine.
+Do not test by mutating VM networking, opening a firewall, installing a tunnel,
+or committing the machine-local endpoint mapping.
 
 Before stopping a machine- or repository-scoped stack, enumerate known
 worktrees with `worktrellis list --project <project>`, inspect

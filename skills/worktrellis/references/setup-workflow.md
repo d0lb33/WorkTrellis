@@ -51,6 +51,11 @@ Read, without mutating:
 10. existing WorkTrellis files, manifest declaration, lockfile resolution,
     resolved package path, installed version, and executable version.
 
+When Docker uses a non-default context, also inspect `docker context show`,
+`docker context inspect`, and `worktrellis services endpoint show`. Record the
+Docker API endpoint separately from the address where application processes
+can reach published service ports.
+
 Record:
 
 - Which process serves HTTP?
@@ -60,6 +65,8 @@ Record:
 - Which services require files from the current checkout?
 - Which environment values are secrets versus derived values?
 - Which package scripts are safe to call without recursion?
+- Does the container engine run on this machine or in a VM, and which exact
+  engine-host interface is reachable from the WorkTrellis machine?
 
 Do not print `.env`. Use tools that reveal variable names only, and avoid
 command traces that could expand values.
@@ -121,6 +128,29 @@ For each host mapping such as `"5432:5432"`:
 Do not remove `expose`, container listeners, health checks, or unrelated port
 mappings. Avoid configuring the same host publication in both Compose and
 WorkTrellis.
+
+### Handle a remote Docker context or local VM
+
+Do not derive service reachability from the Docker API endpoint. Confirm:
+
+1. the active context is the intended engine;
+2. the VM interface accepts Docker-published service ports;
+3. the WorkTrellis machine can route to the connection host; and
+4. the VM network and firewall restrict any non-loopback publication.
+
+Keep the mapping machine-local:
+
+```bash
+worktrellis services endpoint set \
+  --bind-address <engine-host-ip> \
+  --connect-host <reachable-host>
+```
+
+Prefer an exact bind address. Use a wildcard only with an explicit exposure
+decision. Do not commit the mapping or add Parallels-, Hyper-V-, VMware-, or
+Docker-Desktop-specific fields to `worktrellis.config.ts`. WorkTrellis does not
+start the VM, select the Docker context, configure forwarding, or manage DNS,
+firewalls, tunnels, or remote bind mounts.
 
 Supported probes are:
 

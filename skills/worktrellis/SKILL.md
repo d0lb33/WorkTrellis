@@ -1,6 +1,6 @@
 ---
 name: worktrellis
-description: Configure, adopt, validate, migrate, or troubleshoot WorkTrellis in a local development project. Use when an AI coding agent needs to give Git checkouts stable ports and URLs, coordinate project-owned Docker or Podman Compose services, preserve and reconcile machine-stack data lineages, isolate PostgreSQL databases, Redis namespaces, or S3 buckets, generate per-worktree environment variables, supervise local app and worker processes, integrate optional Portless or Tailscale access, or diagnose WorkTrellis scope, retained variants, environment, port, process, and orphan-cleanup problems.
+description: Configure, adopt, validate, migrate, or troubleshoot WorkTrellis in a local development project. Use when an AI coding agent needs to give Git checkouts stable ports and URLs, coordinate project-owned Docker or Podman Compose services including remote Docker contexts or local VMs, preserve and reconcile machine-stack data lineages, isolate PostgreSQL databases, Redis namespaces, or S3 buckets, generate per-worktree environment variables, supervise local app and worker processes, integrate optional Portless or Tailscale access, or diagnose WorkTrellis scope, endpoint, retained-variant, environment, port, process, and orphan-cleanup problems.
 ---
 
 # WorkTrellis
@@ -33,6 +33,10 @@ Inspect the project before editing it:
 9. Verify Git, Node 22 or newer, and Docker or Podman Compose availability.
    Portless-backed URLs require Node 24 or newer. Tailscale sharing also
    requires Portless 0.15.5 or newer.
+10. When Docker uses a non-default context or a local VM, inspect the active
+    Docker context and `worktrellis services endpoint show`. Do not assume the
+    Docker API endpoint is also the address where published service ports are
+    reachable.
 
 Read [setup-workflow.md](references/setup-workflow.md) before implementing a
 new adoption. Read [configuration.md](references/configuration.md) whenever
@@ -43,8 +47,9 @@ creating or changing a WorkTrellis config.
 Ask: "Does this coordinate or isolate local Git working trees?"
 
 WorkTrellis owns identity, scope, deterministic host ports, logical resource
-isolation, generated workspace environment, diagnostics, and foreground
-development-process supervision.
+isolation, context-scoped publication and connection addresses, generated
+workspace environment, diagnostics, and foreground development-process
+supervision.
 
 Keep these concerns with their actual owners:
 
@@ -55,6 +60,8 @@ Keep these concerns with their actual owners:
 - Keep secrets in `.env`, the real process environment, or a secret manager.
 - Keep hostname routing, certificates, route conflicts, Tailscale Serve, and
   remote URLs in Portless.
+- Keep Docker context selection in Docker and VM lifecycle, networking,
+  firewalls, DNS, tunnels, and remote bind-mount paths outside WorkTrellis.
 - Keep production orchestration outside WorkTrellis.
 
 Read [responsibility-boundaries.md](references/responsibility-boundaries.md)
@@ -68,6 +75,10 @@ preset.
   `configVersion`, then follow **Change or migrate safely**.
 - For a failure or stale process, read
   [troubleshooting.md](references/troubleshooting.md) before changing code.
+- For a remote Docker context or VM-hosted engine, read the endpoint sections
+  in [setup-workflow.md](references/setup-workflow.md),
+  [configuration.md](references/configuration.md), and
+  [troubleshooting.md](references/troubleshooting.md).
 - For phone access, configure ordinary Portless support first, leave Tailscale
   off by default, and enable it explicitly with `worktrellis up --tailscale`.
 
@@ -85,6 +96,7 @@ Create a small mapping:
 | Redis data | `redisNamespace()` when callers honor its database and prefix |
 | S3-compatible data | `s3Bucket()` when per-worktree buckets are wanted |
 | HTTP or raw TCP dependency | Named endpoint through `compose.url()` or port |
+| Docker context or VM reachability | Machine-local `services endpoint` mapping |
 | App and workers | Foreground `processes` |
 | Derived connection values | `env(context)` |
 | Secret inputs | Read-only `baseEnv` callbacks |
@@ -208,6 +220,7 @@ worktrellis info
 worktrellis env --explain
 worktrellis services status
 worktrellis services variants
+worktrellis services endpoint show
 worktrellis up
 worktrellis status
 worktrellis down
@@ -280,6 +293,7 @@ Summarize:
 - stack scopes and why they were chosen;
 - selected physical machine lineages, retained variants, compatibility, and
   live or unverifiable consumers;
+- any machine-local Docker-context endpoint mapping and its exposure tradeoff;
 - isolated resources and generated environment keys;
 - the normal local URL and direct-mode behavior;
 - the explicit Tailscale command, if configured;

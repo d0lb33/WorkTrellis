@@ -1,4 +1,4 @@
 interface:
   display_name: "WorkTrellis"
-  short_description: "Isolate worktrees and preserve machine stacks"
-  default_prompt: "Use $worktrellis to configure this project with stable ports, isolated resources, and safe machine-stack lineages."
+  short_description: "Isolate worktrees across local and VM engines"
+  default_prompt: "Use $worktrellis to configure this project with stable ports, isolated resources, safe machine-stack lineages, and correct Docker-context reachability."

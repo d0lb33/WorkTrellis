@@ -97,6 +97,17 @@ Tailscale Serve configuration.
   when it is shared.
 - `test/` — unit, regression, and opt-in Compose integration coverage.
 
+## Documentation and agent skill sync
+
+Treat the bundled WorkTrellis skill under `skills/worktrellis/` as operational
+documentation for coding agents. Every change to `README.md`, `docs/`, examples,
+or other user-facing guidance must be evaluated for skill impact. When a change
+affects supported commands, configuration, responsibility boundaries, setup,
+troubleshooting, or validation, update the relevant `SKILL.md`, bundled
+references, interface metadata, and agent-skill regression tests in the same
+commit. If no skill update is needed, confirm that deliberately during review
+or handoff.
+
 ## Development workflow
 
 Use pnpm and make focused changes. Behavior changes and bug fixes require

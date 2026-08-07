@@ -4,6 +4,7 @@
 
 - Diagnose before changing
 - Port conflicts
+- Docker context endpoint problems
 - Compose and scope problems
 - Environment problems
 - Process and orphan problems
@@ -20,6 +21,7 @@ worktrellis info
 worktrellis status
 worktrellis services status
 worktrellis services variants
+worktrellis services endpoint show
 worktrellis env --explain
 ```
 
@@ -61,6 +63,38 @@ relationship to WorkTrellis first.
 
 Use `worktrellis services adopt --<port-name>-port <port>` only for a real
 machine-local compatibility need. Prefer deterministic allocation.
+
+## Docker context endpoint problems
+
+When Docker runs in a local VM or through a non-default context, keep these
+addresses distinct:
+
+- the Docker API endpoint used by the Docker CLI;
+- the `bindAddress` on the engine host where service ports are published; and
+- the `connectHost` used by WorkTrellis and supervised application processes.
+
+Inspect without changing state:
+
+```bash
+docker context show
+docker context inspect
+worktrellis services endpoint show
+worktrellis doctor
+worktrellis info
+```
+
+If the mapping is stale, confirm that the context was intentionally repointed.
+Then set both addresses again or clear the mapping; never silently reuse it.
+If containers are healthy but probes or resource provisioning cannot connect,
+test the generated host and named port from the machine running WorkTrellis.
+Check that the bind address exists on the engine host and that the VM route and
+firewall permit the connection.
+
+Prefer an exact VM interface. Treat a doctor warning for `0.0.0.0` or `::` as
+an exposure decision to review, not as a reason to suppress diagnostics. Do not
+fix reachability by committing a developer's VM address to project config,
+rewriting the Docker context, adding a WorkTrellis tunnel, or changing remote
+bind-mount paths.
 
 ## Compose and scope problems
 
