@@ -132,6 +132,7 @@ when Docker is available:
 ```bash
 WORKTRELLIS_COMPOSE_TEST=1 pnpm test test/compose.integration.test.ts
 WORKTRELLIS_COMPOSE_TEST=1 pnpm test test/worktree-scopes.smoke.test.ts
+WORKTRELLIS_COMPOSE_TEST=1 pnpm test test/prune.smoke.test.ts
 ```
 
 The scope smoke test must use a real Git repository, a real linked worktree,
