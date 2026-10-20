@@ -138,6 +138,24 @@ export interface ResourceProvisionContext extends ResourceResolveContext {
   projectRoot: string;
 }
 
+export interface ResourceDeprovisionContext extends ResourceResolveContext {
+  /** Report what would be removed without changing anything. */
+  dryRun: boolean;
+}
+
+export interface ResourceDeprovisionResult {
+  /**
+   * removed: deleted now. would-remove: a dry run found it. absent: nothing to
+   * delete. refused: it exists, but the adapter cannot prove it is safe to
+   * delete, so it was kept.
+   */
+  status: "removed" | "would-remove" | "absent" | "refused";
+  /** Short non-secret explanation. */
+  detail?: string;
+  /** Approximate bytes reclaimed, when the protocol reports a size. */
+  bytes?: number;
+}
+
 /**
  * A resource adapter isolates logical data inside a protocol-compatible
  * endpoint. Third-party adapters can use this interface without teaching
@@ -154,6 +172,16 @@ export interface ResourceAdapter<TResolved> {
     resource: TResolved,
     context: ResourceProvisionContext,
   ): Promise<void>;
+  /**
+   * Remove the logical resource of a worktree that `worktrellis prune`
+   * selected. Must delete only what this adapter provisioned for that
+   * workspace, and must honor `dryRun`. Adapters without this hook are
+   * reported as retained.
+   */
+  deprovision?(
+    resource: TResolved,
+    context: ResourceDeprovisionContext,
+  ): Promise<ResourceDeprovisionResult>;
 }
 
 export type AnyResourceAdapter = ResourceAdapter<any>;
@@ -327,6 +355,11 @@ export interface WorkTrellisConfig<
     wildcard?: boolean;
     basePort?: number;
   };
+  /**
+   * `worktrellis prune` always selects worktrees that were deleted. With
+   * `maxIdleDays`, it also selects existing worktrees not used by `up` or
+   * another resolving command for that many days.
+   */
   gc?: { maxIdleDays?: number };
   doctor?: DoctorCheck<TAdapters>[];
 }

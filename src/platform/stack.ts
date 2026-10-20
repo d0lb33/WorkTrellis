@@ -27,7 +27,11 @@ import {
 } from "./lineage";
 import { run } from "../util/proc";
 import { ComposeStack } from "./compose";
-import { renderStack, type RenderedStack } from "./compose-render";
+import {
+  isMachineVariantName,
+  renderStack,
+  type RenderedStack,
+} from "./compose-render";
 import {
   assertDaemonRunning,
   detectEngine,
@@ -154,14 +158,6 @@ async function resolveVariantChoice(options: {
   }
 }
 
-function machineStackPrefix(rendered: RenderedStack): string | null {
-  const prefix = `worktrellis-machine-${rendered.name}-`;
-  // Machine stack IDs normally end with the first eight characters of their
-  // compatibility hash. Very long names are compacted as a whole and cannot
-  // be grouped safely without persisted metadata.
-  return prefix.length + 8 <= 63 ? prefix : null;
-}
-
 function projectFilesMatch(
   rendered: RenderedStack,
   existingDirectory: string,
@@ -197,15 +193,12 @@ export function findRunningMachineStackVariants(
   runningProjectIds: ReadonlySet<string>,
 ): MachineStackVariant[] {
   if (rendered.scope !== "machine") return [];
-  const prefix = machineStackPrefix(rendered);
-  if (!prefix) return [];
 
   return [...runningProjectIds]
     .filter(
       (stackId) =>
         stackId !== rendered.stackId &&
-        stackId.startsWith(prefix) &&
-        /^[a-f0-9]{8}$/.test(stackId.slice(prefix.length)),
+        isMachineVariantName(rendered.name, stackId),
     )
     .sort()
     .map((stackId) => ({

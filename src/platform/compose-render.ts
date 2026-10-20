@@ -148,6 +148,22 @@ function resolveComposeEnv(
   return resolved;
 }
 
+/**
+ * Whether a Compose project name is a variant of machine stack `name`. Variants
+ * end with exactly eight hex characters, so `data` never claims the variants
+ * of `data-test`. Very long names are compacted as a whole and
+ * cannot be grouped safely without persisted metadata.
+ */
+export function isMachineVariantName(name: string, projectName: string): boolean {
+  const prefix = `worktrellis-machine-${name}-`;
+  if (prefix.length + 8 > 63) return false;
+  return (
+    projectName.length === prefix.length + 8 &&
+    projectName.startsWith(prefix) &&
+    /^[a-f0-9]{8}$/.test(projectName.slice(prefix.length))
+  );
+}
+
 function stackIdFor(
   spec: ComposeStackSpec,
   identity: WorkspaceIdentity,

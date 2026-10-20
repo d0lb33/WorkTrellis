@@ -151,6 +151,23 @@ export function readMachineRunLeases(): MachineRunLease[] {
     );
 }
 
+export function readMachineRunLease(
+  repoKey: string,
+  slug: string,
+): MachineRunLease | null {
+  const lease = readJsonFile<MachineRunLease>(homePaths.runLease(repoKey, slug));
+  return lease?.version === LINEAGE_STATE_VERSION ? lease : null;
+}
+
+/** Whether a workspace's recorded supervisor is alive, gone, or unprovable. */
+export function workspaceLeaseState(
+  repoKey: string,
+  slug: string,
+): LeaseConsumer["state"] | "none" {
+  const lease = readMachineRunLease(repoKey, slug);
+  return lease ? classifyLease(lease).state : "none";
+}
+
 export function consumersForProject(projectName: string): LeaseConsumer[] {
   return readMachineRunLeases()
     .filter((lease) =>
@@ -168,7 +185,7 @@ export function clearVerifiedStaleLeases(projectName: string): void {
   }
 }
 
-function classifyLease(lease: MachineRunLease): LeaseConsumer {
+export function classifyLease(lease: MachineRunLease): LeaseConsumer {
   const base = {
     project: lease.project,
     repoKey: lease.repoKey,

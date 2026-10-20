@@ -69,3 +69,9 @@ worktrellis services down --variant <compose-project>
 
 Add `--volumes` only after verifying that its data is no longer needed. This is
 the sole destructive variant-cleanup path.
+
+Once a variant has no containers and no volumes, its generated definition and
+any lineage selection pointing at it are only bookkeeping, but they still show
+up in `services variants`. `worktrellis prune --yes` forgets them when no live
+or unverifiable supervisor uses them and the current checkout does not resolve
+to them. It never removes a variant that still holds containers or volumes.

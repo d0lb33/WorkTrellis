@@ -16,8 +16,8 @@
 
 - Preserve unrelated changes.
 - Never print secret values.
-- Do not use `db reset`, `services down --volumes`, or other destructive
-  commands merely as a test.
+- Do not use `db reset`, `services down --volumes`, `prune --yes`, or other
+  destructive commands merely as a test.
 - Check shared-stack users before stopping machine- or repository-scoped
   services.
 - Use the project's package manager and local WorkTrellis executable.
@@ -54,7 +54,10 @@ worktrellis services status
 worktrellis services variants
 worktrellis services endpoint show
 worktrellis status
+worktrellis prune
 ```
+
+`worktrellis prune` without `--yes` is a dry run and changes nothing.
 
 Use `--json` when programmatic assertions help. Treat all resolved environment
 output, including `env --explain`, as sensitive local-only output even when

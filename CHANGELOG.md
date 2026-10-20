@@ -5,10 +5,33 @@ All notable changes to WorkTrellis are documented here. The project follows
 
 ## Unreleased
 
-## 0.4.6-beta.0 - 2026-08-06
+## 0.5.0 - 2026-10-20
+
+This release includes the changes first published as `0.4.6-beta.0`.
+Configuration changes are additive; `configVersion` remains `3`.
 
 ### Added
 
+- `worktrellis prune` reports what deleted worktrees of the current project
+  still hold and, with `--yes`, removes it: their WorkTrellis-derived
+  databases and buckets, workspace-scoped Compose projects, run leases, logs,
+  and workspace records. It also removes stale run leases and machine-stack
+  definitions and lineage selections with no containers, volumes, or live
+  supervisor. A worktree on an unmounted volume, one with a live or
+  unverifiable supervisor, and the current worktree are never selected, and a
+  record is kept while any of its resources cannot be removed.
+- `gc.maxIdleDays` and `prune --max-idle-days <n>` select existing worktrees
+  that have been idle that many days. The setting was previously documented
+  but had no effect.
+- Resource adapters may implement an optional `deprovision` hook, with the new
+  public `ResourceDeprovisionContext` and `ResourceDeprovisionResult` types.
+  `postgresDatabase()` drops the derived database and refuses templates,
+  databases with open connections, and databases whose provenance names
+  another workspace, without terminating any session. `s3Bucket()` empties
+  and deletes the derived bucket and refuses versioned buckets.
+  `redisNamespace()` has no hook because logical database indexes are shared.
+- `worktrellis doctor` warns when workspaces can be pruned, without
+  connecting to their resources.
 - Machine-local Docker context endpoint mappings can publish declared Compose
   ports on a VM interface while generated URLs, resource provisioning, and
   health checks connect through the corresponding VM-reachable host.
@@ -17,8 +40,18 @@ All notable changes to WorkTrellis are documented here. The project follows
 
 ### Changed
 
+- `worktrellis services variants` summarizes stale run leases instead of
+  listing them as consumers, and marks consumers whose worktree is missing.
+  The JSON output is unchanged.
 - Prerelease GitHub releases publish to npm under the `beta` dist-tag, while
   stable releases explicitly retain the `latest` dist-tag.
+
+### Fixed
+
+- Machine-stack variants are matched by exact name. A stack whose name is a
+  prefix of another, such as `data` and `data-test`, no longer
+  lists, reconciles, or stops the other stack's variants.
+- `gc.maxIdleDays` is validated as a positive whole number of days.
 
 ## 0.4.5 - 2026-08-04
 

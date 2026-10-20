@@ -27,7 +27,7 @@ export default defineConfig({
 | `criticalKeys` | no | Generated keys whose `.env` conflicts fail doctor |
 | `processPorts` | no | Additional deterministic foreground-process ports |
 | `url` | no | URL provider, wildcard behavior, and base app port |
-| `gc` | no | Retention policy for inactive workspace records |
+| `gc` | no | `{ maxIdleDays }`: let `prune` also select worktrees idle that many days |
 | `doctor` | no | Project-specific diagnostic checks |
 
 ## Compose stacks
@@ -267,6 +267,38 @@ asynchronous, and must be idempotent. The endpoint references a declared named
 Compose port, so WorkTrellis still validates the stack boundary and controls
 host publication.
 
+`deprovision` is optional. `worktrellis prune` calls it for each worktree it
+selects, with `context.workspace` rebuilt from that worktree's record and
+`context.dryRun` set unless `--yes` was given. Delete only what this adapter
+provisioned for that workspace, honor `dryRun`, and return a status:
+
+```ts
+async deprovision(resource, { dryRun }) {
+  if (!(await indexExists(resource))) return { status: "absent" };
+  if (dryRun) return { status: "would-remove" };
+  await deleteIndex(resource);
+  return { status: "removed" };
+}
+```
+
+Return `{ status: "refused", detail }` when the resource exists but cannot be
+proven safe to delete; the worktree's record is then kept so a later prune can
+retry. `bytes` is optional and feeds the reclaimed-size total. An adapter
+without `deprovision` is reported as retained.
+
+## Workspace retention
+
+```ts
+gc: { maxIdleDays: 30 },
+```
+
+`worktrellis prune` always considers worktrees that were deleted. With
+`maxIdleDays`, a positive whole number, it also selects existing worktrees
+whose workspace record was last refreshed by `up` (or another command that
+writes the generated environment) at least that many days ago. Their next
+`up` provisions fresh resources. `--max-idle-days <n>` overrides the setting
+for one run. Nothing is removed without `prune --yes`.
+
 ## Environment profile
 
 `env(context)` receives:
@@ -434,6 +466,6 @@ integer protocol:
 - a breaking interpretation requires a new version;
 - unsupported versions fail before infrastructure is changed.
 
-WorkTrellis 0.4 accepts only `configVersion: 3`. See the
+WorkTrellis 0.4 and 0.5 accept only `configVersion: 3`. See the
 [v3 migration guide](migration-to-v3.md) for the credential and JSON-output
 changes.

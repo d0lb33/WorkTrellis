@@ -86,8 +86,9 @@ from diagnostic details.
 Checks Node, Git, the expected application port, the container engine, stack
 reachability, environment conflicts, generated-snapshot consumption, and
 project-defined doctor checks. A held application port without a live
-WorkTrellis supervisor is a failing check with a safe recovery hint. Supports
-`--json`.
+WorkTrellis supervisor is a failing check with a safe recovery hint. It warns
+when `worktrellis prune` would select deleted or idle worktrees, without
+connecting to their resources. Supports `--json`.
 
 ## Environment
 
@@ -169,6 +170,54 @@ worktrellis db reset
 
 `reset` is destructive and is limited to the database WorkTrellis derived for
 the current worktree.
+
+## Maintenance
+
+### `worktrellis prune`
+
+```text
+worktrellis prune [--yes] [--max-idle-days <n>] [--json]
+```
+
+Reports what deleted worktrees of the current project still hold, and with
+`--yes` removes it. Without `--yes` nothing changes. Run it from any checkout
+of the project; it uses that checkout's configuration, credentials, and
+Compose endpoints.
+
+A recorded worktree is selected when:
+
+- its path is gone but an ancestor directory still exists. A path whose
+  nearest surviving ancestor is a filesystem root or a mount root such as
+  `/Volumes` is reported as unavailable instead, so an unmounted drive never
+  makes its worktrees prunable; or
+- it still exists but its workspace record was last refreshed more than
+  `--max-idle-days` days ago, or `gc.maxIdleDays` when the flag is absent.
+
+A worktree whose recorded supervisor is live, or cannot be verified as
+stopped, is never selected, and the current worktree never is.
+
+For each selected worktree, `prune --yes`:
+
+- calls each resource adapter's `deprovision` hook. `postgresDatabase()` drops
+  the database WorkTrellis derived for that worktree, but keeps it when it is a
+  template, has open connections, or its provenance names another workspace.
+  No session is terminated. `s3Bucket()` empties and deletes the derived
+  bucket and refuses a versioned bucket. `redisNamespace()` and adapters
+  without the hook are reported as retained;
+- removes the worktree's workspace-scoped Compose projects with their
+  containers, networks, and named volumes; and
+- removes its run lease, logs, and workspace record. The record is kept, so a
+  later prune can retry, while any resource is refused, failed, unreachable,
+  or still provisioned in another existing Compose project.
+
+It also removes stale run leases of the project, and machine-stack definition
+directories and lineage selections of the project's stacks that no container,
+volume, or live supervisor uses. Shared stacks are never started, stopped, or
+emptied, and retained variant volumes stay under
+`services down --variant --volumes`.
+
+A dry run exits `0`. With `--yes`, the exit code is `1` when any selected
+worktree kept its record.
 
 ## Introspection
 

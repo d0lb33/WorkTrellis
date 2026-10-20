@@ -135,6 +135,18 @@ function validate(
     validateResource(name, resource, stackNames, config.compose, where);
   }
 
+  if (config.gc !== undefined) {
+    if (!config.gc || typeof config.gc !== "object" || Array.isArray(config.gc)) {
+      usageError(`${where}: \`gc\` must be an object.`);
+    }
+    const days = config.gc.maxIdleDays;
+    if (days !== undefined && (!Number.isInteger(days) || days < 1)) {
+      usageError(
+        `${where}: \`gc.maxIdleDays\` must be a positive whole number of days.`,
+      );
+    }
+  }
+
   if (config.db) {
     const adapter = config.resources?.[config.db.resource];
     if (!adapter) {

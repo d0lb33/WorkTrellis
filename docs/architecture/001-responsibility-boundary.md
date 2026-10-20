@@ -11,7 +11,8 @@ WorkTrellis coordinates local Git worktrees. It owns:
 - canonical worktree and repository identity;
 - stable slugs, scoped Compose project names, deterministic app ports, and
   worktree-safe names supplied to URL providers;
-- per-worktree PostgreSQL databases, Redis namespaces, and object buckets;
+- per-worktree PostgreSQL databases, Redis namespaces, and object buckets,
+  including their explicit retirement once a worktree is deleted or idle;
 - generated `.worktrellis/env` snapshots;
 - environment-aware `exec` and package-script execution;
 - infrastructure coordination, diagnostics, and conflict detection; and

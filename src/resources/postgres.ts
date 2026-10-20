@@ -1,7 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import type { BootstrapContext, BootstrapHooks, WorkspaceIdentity } from "../types";
+import type {
+  BootstrapContext,
+  BootstrapHooks,
+  ResourceDeprovisionResult,
+  WorkspaceIdentity,
+} from "../types";
 import { WorkTrellisError, environmentError } from "../core/errors";
 import { redactDiagnosticText } from "../core/env-resolve";
 import { c, step } from "../util/log";
@@ -153,6 +158,98 @@ export async function dropDatabase(
       [name],
     );
     await admin.query(`drop database if exists ${quoteIdentifier(name)}`);
+  } finally {
+    await admin.end();
+  }
+}
+
+/**
+ * Who the provenance table says owns a database. "none" means the table is
+ * absent: an adapter-only database, or one whose setup never finished.
+ */
+async function provenanceOwner(
+  databaseUrl: string,
+  workspace: { project: string; slug: string },
+): Promise<"match" | "none" | "other"> {
+  const client = await connect(databaseUrl);
+  try {
+    const table = await client.query<{ exists: boolean }>(
+      "select to_regclass('public._worktrellis_workspace') is not null as exists",
+    );
+    if (table.rows[0]?.exists !== true) return "none";
+    const owners = await client.query<{ slug: string; project: string }>(
+      "select slug, project from _worktrellis_workspace",
+    );
+    // A database cloned from another workspace carries the source row too, so
+    // ownership means this workspace appears, not that it appears alone.
+    return owners.rows.some(
+      (row) => row.slug === workspace.slug && row.project === workspace.project,
+    )
+      ? "match"
+      : "other";
+  } finally {
+    await client.end();
+  }
+}
+
+/**
+ * Drop the database of a worktree that `worktrellis prune` selected.
+ *
+ * Refuses rather than forces: a template, a database with open connections, or
+ * one whose provenance names another workspace is kept, and no session is ever
+ * terminated. Connections are counted before WorkTrellis opens its own
+ * provenance connection, and DROP DATABASE waits briefly for that one to close.
+ */
+export async function deprovisionWorkspaceDatabase(options: {
+  databaseUrl: string;
+  name: string;
+  project: string;
+  slug: string;
+  dryRun: boolean;
+}): Promise<ResourceDeprovisionResult> {
+  const admin = await connect(adminUrl(options.databaseUrl));
+  try {
+    const found = await admin.query<{ bytes: string; is_template: boolean }>(
+      "select pg_database_size(oid)::text as bytes, datistemplate as is_template from pg_database where datname = $1",
+      [options.name],
+    );
+    const row = found.rows[0];
+    if (!row) return { status: "absent" };
+    const bytes = Number(row.bytes);
+
+    if (row.is_template) {
+      return { status: "refused", detail: "marked as a template database", bytes };
+    }
+
+    const sessions = await admin.query<{ open: string }>(
+      "select count(*)::text as open from pg_stat_activity where datname = $1",
+      [options.name],
+    );
+    const open = Number(sessions.rows[0]?.open ?? 0);
+    if (open > 0) {
+      return { status: "refused", detail: `${open} open connection(s)`, bytes };
+    }
+
+    let owner: "match" | "none" | "other";
+    try {
+      owner = await provenanceOwner(options.databaseUrl, options);
+    } catch {
+      return { status: "refused", detail: "could not read its provenance", bytes };
+    }
+    if (owner === "other") {
+      return {
+        status: "refused",
+        detail: "its provenance records a different workspace",
+        bytes,
+      };
+    }
+
+    const detail =
+      owner === "none" ? "no provenance table; matched by derived name" : undefined;
+    if (options.dryRun) return { status: "would-remove", bytes, detail };
+
+    await admin.query(`drop database ${quoteIdentifier(options.name)}`);
+    return { status: "removed", bytes, detail };
   } finally {
     await admin.end();
   }

@@ -87,6 +87,23 @@ describe("WorkTrellis agent skill", () => {
     expect(validation).toContain("port-conflict checks");
   });
 
+  it("teaches explicitly authorized retirement of deleted worktrees", async () => {
+    const skill = await read("SKILL.md");
+    const configuration = await read("references/configuration.md");
+    const boundaries = await read("references/responsibility-boundaries.md");
+    const troubleshooting = await read("references/troubleshooting.md");
+    const validation = await read("references/validation.md");
+
+    expect(skill).toContain("Run `worktrellis prune` (a dry run)");
+    expect(skill).toContain("Never add `--yes` on your own.");
+    expect(skill).toContain("WorkTrellis 0.5 or newer");
+    expect(configuration).toContain("deprovision(resource, { dryRun })");
+    expect(boundaries).toContain("only with `--yes`");
+    expect(troubleshooting).toContain("Leftover worktree resources and disk usage");
+    expect(troubleshooting).toContain("do not terminate sessions");
+    expect(validation).toContain("`prune --yes`");
+  });
+
   it("documents a copyable skills CLI installation command", async () => {
     const readme = await readFile(resolve(root, "README.md"), "utf8");
 

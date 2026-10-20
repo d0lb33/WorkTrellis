@@ -31,7 +31,10 @@ import {
   consumersForProject,
   projectSelection,
 } from "../platform/lineage-state";
-import { renderStack } from "../platform/compose-render";
+import {
+  isMachineVariantName,
+  renderStack,
+} from "../platform/compose-render";
 import { ComposeStack } from "../platform/compose";
 
 export interface ServicesOptions {
@@ -212,7 +215,7 @@ export async function runServices(options: ServicesOptions): Promise<number> {
       const endpoint = await resolveEngineEndpoint(engine);
       if (options.variant) {
         const spec = specs.find((entry) =>
-          options.variant!.startsWith(`worktrellis-machine-${entry.name}-`),
+          isMachineVariantName(entry.name, options.variant!),
         );
         if (!spec || spec.scope !== "machine") {
           usageError(
@@ -334,14 +337,30 @@ export async function runServices(options: ServicesOptions): Promise<number> {
             `${variant.running ? "running" : "stopped"}  ${variant.volumes.length} volume(s)  ${variant.compatibility}`,
           ]),
         );
+        let staleLeases = 0;
         for (const variant of result.variants) {
           for (const consumer of variant.consumers) {
+            // A stale lease is a supervisor that exited without cleaning up;
+            // it is not a consumer and never blocks a lineage decision.
+            if (consumer.state === "stale") {
+              staleLeases += 1;
+              continue;
+            }
             info(
               c.gray(
-                `    ${variant.projectName}: ${consumer.project}/${consumer.slug} pid ${consumer.pid} ${consumer.state}`,
+                `    ${variant.projectName}: ${consumer.project}/${consumer.slug} pid ${consumer.pid} ${consumer.state}${
+                  consumer.worktreeExists ? "" : " (worktree missing)"
+                }`,
               ),
             );
           }
+        }
+        if (staleLeases > 0) {
+          info(
+            c.gray(
+              `    ${staleLeases} stale run lease(s) from exited supervisors; \`worktrellis prune\` removes them`,
+            ),
+          );
         }
       }
       return EXIT.ok;

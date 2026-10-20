@@ -142,3 +142,9 @@ WorkTrellis supervises foreground local-development processes. It should:
 
 WorkTrellis does not own production daemons or arbitrary machine processes.
 Never kill a process based only on a stale numeric PID or an unverified port.
+
+Resource retirement follows the same rule. `worktrellis prune` removes only
+what WorkTrellis derived for a deleted or idle worktree, only with `--yes`,
+and keeps anything it cannot prove belongs to that worktree. Project-owned
+databases, dumps, templates, and retained variant volumes stay with the
+project.

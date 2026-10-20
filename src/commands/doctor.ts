@@ -4,7 +4,13 @@ import path from "node:path";
 import type { DoctorResult } from "../types";
 import { EXIT } from "../core/errors";
 import { prepareWorkspace } from "../core/prepare";
-import { readLiveRunState, readMachineConfig } from "../core/state";
+import { selectPruneCandidates } from "../core/gc";
+import {
+  readLiveRunState,
+  readMachineConfig,
+  readWorkspaceRecords,
+} from "../core/state";
+import { workspaceLeaseState } from "../platform/lineage-state";
 import { engineContext, engineVersion } from "../platform/engine";
 import {
   isWildcardAddress,
@@ -57,6 +63,28 @@ export function endpointDoctorCheck(endpoint: EngineEndpoint): Check | null {
   return ok(
     `service endpoint ${endpoint.connectHost}`,
     `Docker publishes on ${endpoint.bindAddress}`,
+  );
+}
+
+/**
+ * Report workspaces that `worktrellis prune` would select. Read only: nothing
+ * is resolved against a database, so sizes are left to the prune dry run.
+ */
+export function pruneDoctorCheck(
+  options: Parameters<typeof selectPruneCandidates>[0],
+): Check | null {
+  const { candidates } = selectPruneCandidates(options);
+  if (candidates.length === 0) return null;
+  const deleted = candidates.filter((entry) => entry.reason === "missing").length;
+  const idle = candidates.length - deleted;
+  const parts = [
+    deleted > 0 ? `${deleted} deleted worktree(s)` : null,
+    idle > 0 ? `${idle} idle for ${options.maxIdleDays}+ days` : null,
+  ].filter(Boolean);
+  return warn(
+    `${candidates.length} workspace(s) can be pruned`,
+    `${parts.join(", ")} still hold their databases, buckets, and records.`,
+    "Review with `worktrellis prune`, then apply with `worktrellis prune --yes`.",
   );
 }
 
@@ -153,6 +181,16 @@ export async function runDoctor(options: DoctorOptions): Promise<number> {
       );
     }
   }
+
+  const pruneCheck = pruneDoctorCheck({
+    records: readWorkspaceRecords({ project: context.config.project }),
+    project: context.config.project,
+    current: { repoKey: context.identity.repoKey, slug: context.identity.slug },
+    maxIdleDays: context.config.gc?.maxIdleDays,
+    now: Date.now(),
+    leaseState: (record) => workspaceLeaseState(record.repoKey, record.slug),
+  });
+  if (pruneCheck) checks.push(pruneCheck);
 
   // Env conflicts: the reason a worktree might not be as isolated as it looks.
   const critical = env.conflicts.filter((conflict) => conflict.severity === "critical");

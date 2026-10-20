@@ -1,6 +1,6 @@
 ---
 name: worktrellis
-description: Configure, adopt, validate, migrate, or troubleshoot WorkTrellis in a local development project. Use when an AI coding agent needs to give Git checkouts stable ports and URLs, coordinate project-owned Docker or Podman Compose services including remote Docker contexts or local VMs, preserve and reconcile machine-stack data lineages, isolate PostgreSQL databases, Redis namespaces, or S3 buckets, generate per-worktree environment variables, supervise local app and worker processes, integrate optional Portless or Tailscale access, or diagnose WorkTrellis scope, endpoint, retained-variant, environment, port, process, and orphan-cleanup problems.
+description: Configure, adopt, validate, migrate, or troubleshoot WorkTrellis in a local development project. Use when an AI coding agent needs to give Git checkouts stable ports and URLs, coordinate project-owned Docker or Podman Compose services including remote Docker contexts or local VMs, preserve and reconcile machine-stack data lineages, isolate PostgreSQL databases, Redis namespaces, or S3 buckets, retire the resources of deleted or idle worktrees, generate per-worktree environment variables, supervise local app and worker processes, integrate optional Portless or Tailscale access, or diagnose WorkTrellis scope, endpoint, retained-variant, environment, port, process, and orphan-cleanup problems.
 ---
 
 # WorkTrellis
@@ -284,6 +284,26 @@ container name.
 
 Do not bump WorkTrellis itself while adopting it in another project unless the
 user explicitly requests a package upgrade.
+
+## Retire deleted worktrees
+
+Deleting a Git worktree leaves its database, bucket, workspace-scoped stack,
+and WorkTrellis records behind. `worktrellis doctor` warns when any exist.
+
+1. Run `worktrellis prune` (a dry run) from a checkout of the project and
+   report what each selected worktree still holds and its size.
+2. Run `worktrellis prune --yes` only when the user explicitly authorizes
+   permanent deletion of those resources. Never add `--yes` on your own.
+3. Treat `refused`, `unavailable`, and `elsewhere` results as information:
+   close open connections, start the stack, or prune from the checkout that
+   uses that variant. Never force around them.
+4. Use `gc: { maxIdleDays }` or `--max-idle-days <n>` only when the user wants
+   existing but idle worktrees reset as well.
+
+Prune requires WorkTrellis 0.5 or newer in the project, because the resource
+adapters come from the project's installed package. It never stops a shared
+stack or deletes retained variant volumes; that remains
+`services down --variant <compose-project> --volumes`.
 
 ## Report the result
 

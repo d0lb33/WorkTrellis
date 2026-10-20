@@ -14,7 +14,11 @@ import { readJsonFile } from "../util/fs";
 import { run } from "../util/proc";
 import type { ContainerEngine } from "./engine";
 import { ComposeStack } from "./compose";
-import { renderStack, type RenderedStack } from "./compose-render";
+import {
+  isMachineVariantName,
+  renderStack,
+  type RenderedStack,
+} from "./compose-render";
 import {
   clearVerifiedStaleLeases,
   consumersForProject,
@@ -47,21 +51,22 @@ export async function listMachineVariants(options: {
   rendered: RenderedStack;
 }): Promise<MachineVariant[]> {
   if (options.rendered.scope !== "machine") return [];
-  const prefix = machinePrefix(options.rendered.name);
+  const isVariant = (project: string) =>
+    isMachineVariantName(options.rendered.name, project);
   const [containers, volumes] = await Promise.all([
     listComposeContainers(options.engine),
     listComposeVolumes(options.engine),
   ]);
   const projects = new Set<string>();
   for (const container of containers) {
-    if (container.projectName.startsWith(prefix)) projects.add(container.projectName);
+    if (isVariant(container.projectName)) projects.add(container.projectName);
   }
   for (const [project] of volumes) {
-    if (project.startsWith(prefix)) projects.add(project);
+    if (isVariant(project)) projects.add(project);
   }
   try {
     for (const entry of fs.readdirSync(homePaths.stacks())) {
-      if (entry.startsWith(prefix)) projects.add(entry);
+      if (isVariant(entry)) projects.add(entry);
     }
   } catch {
     // No machine stack state yet.
@@ -204,11 +209,7 @@ export async function reconcileMachineLineage(options: {
   if (options.spec.scope !== "machine") {
     throw new WorkTrellisError("Only machine-scoped stacks can be reconciled.");
   }
-  const prefix = machinePrefix(options.spec.name);
-  if (
-    !/^[a-z0-9][a-z0-9_-]*$/.test(options.sourceProject) ||
-    !options.sourceProject.startsWith(prefix)
-  ) {
+  if (!isMachineVariantName(options.spec.name, options.sourceProject)) {
     conflictError(
       `${options.sourceProject} is not a variant of machine stack "${options.spec.name}".`,
     );
@@ -760,8 +761,38 @@ function stackFromExisting(
   return new ComposeStack(engine, rendered);
 }
 
+export interface ComposeInventory {
+  /** Container count and running count per Compose project. */
+  containers: Map<string, { total: number; running: number }>;
+  /** Named volumes per Compose project. */
+  volumes: Map<string, Set<string>>;
+}
+
+/**
+ * Every Compose project the engine knows about, by containers and volumes.
+ * Unlike the lenient listings used for display, a failed engine query throws:
+ * cleanup must never read "could not ask" as "nothing exists".
+ */
+export async function readComposeInventory(
+  engine: ContainerEngine,
+): Promise<ComposeInventory> {
+  const [containers, volumes] = await Promise.all([
+    listComposeContainers(engine, true),
+    listComposeVolumes(engine, true),
+  ]);
+  const byProject = new Map<string, { total: number; running: number }>();
+  for (const container of containers) {
+    const entry = byProject.get(container.projectName) ?? { total: 0, running: 0 };
+    entry.total += 1;
+    if (container.running) entry.running += 1;
+    byProject.set(container.projectName, entry);
+  }
+  return { containers: byProject, volumes };
+}
+
 async function listComposeContainers(
   engine: ContainerEngine,
+  strict = false,
 ): Promise<ContainerInventory[]> {
   const result = await run(
     engine.cli,
@@ -773,7 +804,14 @@ async function listComposeContainers(
     ],
     { quiet: true, timeoutMs: 30_000 },
   ).catch(() => null);
-  if (!result || result.code !== 0) return [];
+  if (!result || result.code !== 0) {
+    if (strict) {
+      throw new WorkTrellisError(`Could not list ${engine.name} containers.`, {
+        remediation: result?.stderr.trim().split("\n")[0],
+      });
+    }
+    return [];
+  }
   return result.stdout
     .split(/\r?\n/)
     .map((line) => line.trim().split("\t"))
@@ -786,6 +824,7 @@ async function listComposeContainers(
 
 async function listComposeVolumes(
   engine: ContainerEngine,
+  strict = false,
 ): Promise<Map<string, Set<string>>> {
   const result = await run(
     engine.cli,
@@ -798,7 +837,14 @@ async function listComposeVolumes(
     { quiet: true, timeoutMs: 30_000 },
   ).catch(() => null);
   const volumes = new Map<string, Set<string>>();
-  if (!result || result.code !== 0) return volumes;
+  if (!result || result.code !== 0) {
+    if (strict) {
+      throw new WorkTrellisError(`Could not list ${engine.name} volumes.`, {
+        remediation: result?.stderr.trim().split("\n")[0],
+      });
+    }
+    return volumes;
+  }
   for (const line of result.stdout.split(/\r?\n/)) {
     const [name, project] = line.trim().split("\t");
     if (!name || !project) continue;
@@ -807,10 +853,6 @@ async function listComposeVolumes(
     volumes.set(project, entries);
   }
   return volumes;
-}
-
-function machinePrefix(name: string): string {
-  return `worktrellis-machine-${name}-`;
 }
 
 function projectDefinitionExists(projectName: string): boolean {

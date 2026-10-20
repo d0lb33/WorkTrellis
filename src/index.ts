@@ -33,6 +33,8 @@ export type {
   ResolvedResources,
   ResourceAdapter,
   ResourceAdapters,
+  ResourceDeprovisionContext,
+  ResourceDeprovisionResult,
   ResourceEndpoint,
   ResourceProvisionContext,
   ResourceResolveContext,

@@ -52,7 +52,7 @@ Top-level responsibilities:
 | `criticalKeys` | Derived keys that must not conflict with `.env` |
 | `url` | Direct or Portless URL selection |
 | `doctor` | Project-specific diagnostic checks |
-| `gc` | Inactive workspace retention |
+| `gc` | `{ maxIdleDays }` lets `prune` also select idle worktrees |
 
 ## Compose stacks and ports
 
@@ -370,3 +370,9 @@ const searchIndex = (endpoint: { stack: string; port: string }) =>
 
 Keep `resolve` synchronous and side-effect-free. Make `provision` idempotent.
 Do not select a container image or own a service definition in an adapter.
+
+Add an optional `deprovision(resource, { dryRun })` hook so `worktrellis prune`
+can retire the resource of a deleted worktree. Delete only what the adapter
+provisioned for `context.workspace`, change nothing when `dryRun` is true, and
+return `removed`, `would-remove`, `absent`, or `refused` with a short
+non-secret `detail`.

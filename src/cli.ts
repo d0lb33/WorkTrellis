@@ -16,6 +16,7 @@ import {
 import { runEnv } from "./commands/env";
 import { runInfo } from "./commands/info";
 import { runList } from "./commands/list";
+import { runPrune } from "./commands/prune";
 import { runSelfCheck } from "./commands/self-check";
 import { runServices } from "./commands/services";
 import { c, error, info, setQuiet } from "./util/log";
@@ -48,6 +49,10 @@ ${c.bold("Environment:")}
 ${c.bold("Infrastructure:")}
   services up|down|restart|status|logs|variants|reconcile|adopt|endpoint
   db url|migrate|seed|reset
+
+${c.bold("Maintenance:")}
+  prune                    Remove resources of deleted or idle worktrees
+                           [--yes] [--max-idle-days <n>] [--json]
 
 ${c.bold("Introspection:")}
   info                     This worktree's identity and derived names
@@ -166,6 +171,17 @@ const COMMANDS: Record<string, CommandHandler> = {
       explain: flagBoolean(args, "explain"),
       print: flagString(args, "print"),
       direct: flagBoolean(args, "direct"),
+    }),
+  prune: (args) =>
+    runPrune({
+      cwd: flagString(args, "cwd"),
+      configPath: flagString(args, "config"),
+      json: flagBoolean(args, "json"),
+      yes: flagBoolean(args, "yes"),
+      // A bare flag reaches validation as "true" and is rejected there.
+      maxIdleDays: args.flags.has("max-idle-days")
+        ? String(args.flags.get("max-idle-days"))
+        : undefined,
     }),
   services: (args) =>
     runServices({

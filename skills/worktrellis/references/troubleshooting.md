@@ -10,6 +10,7 @@
 - Process and orphan problems
 - Portless and Tailscale problems
 - Resource isolation problems
+- Leftover worktree resources and disk usage
 
 ## Diagnose before changing
 
@@ -235,3 +236,33 @@ override it with `.env`.
 Use a workspace-scoped Compose stack if the service cannot isolate logical
 state. Propose a custom adapter only when the protocol exposes a clear,
 idempotent isolation unit.
+
+## Leftover worktree resources and disk usage
+
+A shared database server or Docker disk that keeps growing usually holds the
+databases and buckets of worktrees that were deleted. Run the dry run first:
+
+```bash
+worktrellis prune
+worktrellis prune --json
+```
+
+Report each selected worktree, its reason, and the reclaimable size. Apply
+with `worktrellis prune --yes` only after the user explicitly authorizes the
+deletion.
+
+- `refused` keeps a resource that is a template, has open connections, or has
+  provenance naming another workspace. Find and stop the connection owner;
+  do not terminate sessions on WorkTrellis's behalf.
+- `unavailable` means the endpoint stack is not reachable. Start it with
+  `worktrellis services up`, then prune again.
+- `elsewhere` means the worktree last used another machine-stack variant that
+  still exists. Prune from a checkout that resolves that variant.
+- `retained` means the adapter has no `deprovision` hook, such as
+  `redisNamespace()`.
+- A worktree reported as unavailable because its volume is not mounted is
+  skipped on purpose. Mount the volume, or leave the record.
+
+Databases that no WorkTrellis record derives, such as project restore
+templates or one-off rehearsal copies, are the project's to manage. Do not
+delete them as part of a prune.

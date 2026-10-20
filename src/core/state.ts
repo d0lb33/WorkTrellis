@@ -32,6 +32,9 @@ export const homePaths = {
     path.join(worktrellisHome(), "run-leases", `${repoKey}-${slug}.json`),
   locks: () => path.join(worktrellisHome(), "locks"),
   lock: (name: string) => path.join(worktrellisHome(), "locks", `${name}.lock`),
+  logs: () => path.join(worktrellisHome(), "logs"),
+  workspaceLogs: (workspaceKey: string) =>
+    path.join(worktrellisHome(), "logs", workspaceKey),
   workspaces: () => path.join(worktrellisHome(), "workspaces"),
   workspaceIndex: (repoKey: string, slug: string) =>
     path.join(worktrellisHome(), "workspaces", repoKey, `${slug}.json`),
@@ -49,9 +52,7 @@ export function workspacePaths(worktreeRoot: string, workspaceKey?: string) {
   // Logs live OUTSIDE the worktree on purpose. Dev servers and file watchers
   // watch the project directory, and a log file being appended to inside it is
   // a reliable way to trigger an endless rebuild loop.
-  const logs = path.join(
-    worktrellisHome(),
-    "logs",
+  const logs = homePaths.workspaceLogs(
     workspaceKey ?? path.basename(worktreeRoot),
   );
 
@@ -163,8 +164,8 @@ export interface WorkspaceRecord {
 
 /**
  * Record this workspace in the machine-wide index. This is what lets
- * `worktrellis list` show every worktree of every project, and what gives the
- * garbage collector something to reconcile against.
+ * `worktrellis list` show every worktree of every project, and what gives
+ * `worktrellis prune` something to reconcile against.
  */
 export function touchWorkspaceRecord(
   identity: WorkspaceIdentity,

@@ -7,6 +7,7 @@ import type {
   ResolvedResources,
   ResourceAdapter,
   ResourceAdapters,
+  ResourceDeprovisionResult,
   ResourceEndpoint,
   ResourceResolveContext,
   S3Bucket,
@@ -21,7 +22,11 @@ import {
 } from "../core/naming";
 import { hexModulo } from "../util/hash";
 import { step } from "../util/log";
-import { createDatabase, databaseExists } from "./postgres";
+import {
+  createDatabase,
+  databaseExists,
+  deprovisionWorkspaceDatabase,
+} from "./postgres";
 
 export type ResourceString = string | ((
   context: ResourceResolveContext,
@@ -107,6 +112,14 @@ export function postgresDatabase(
         await createDatabase(resource.url, resource.database);
       }
     },
+    deprovision: (resource, context) =>
+      deprovisionWorkspaceDatabase({
+        databaseUrl: resource.url,
+        name: resource.database,
+        project: context.workspace.project,
+        slug: context.workspace.slug,
+        dryRun: context.dryRun,
+      }),
   });
 }
 
@@ -140,6 +153,9 @@ export function redisNamespace(
     },
     describe: (resource) =>
       `database ${resource.database}, prefix ${resource.prefix}`,
+    // No deprovision hook: logical database indexes are shared by hash across
+    // worktrees, and only callers that honor the prefix keep keys inside it, so
+    // WorkTrellis cannot prove which keys belong to one workspace.
   });
 }
 
@@ -170,6 +186,8 @@ export function s3Bucket(
     },
     describe: (resource) => `bucket ${resource.bucket}`,
     provision: ensureObjectStorageBucket,
+    deprovision: (resource, context) =>
+      deprovisionObjectStorageBucket(resource, context.dryRun),
   });
 }
 
@@ -185,7 +203,7 @@ export function resolveResources<
   const resources: Record<string, unknown> = {};
 
   for (const [name, adapter] of Object.entries(adapters)) {
-    const endpoint = resolveEndpoint(
+    const endpoint = resolveResourceEndpoint(
       options.compose,
       adapter.endpoint,
     );
@@ -212,7 +230,7 @@ export async function provisionResources(options: {
   const skipped = new Set(options.skip ?? []);
   for (const [name, adapter] of Object.entries(options.adapters ?? {})) {
     if (!adapter.provision || skipped.has(name)) continue;
-    const endpoint = resolveEndpoint(
+    const endpoint = resolveResourceEndpoint(
       options.compose,
       adapter.endpoint,
     );
@@ -256,13 +274,9 @@ async function provisionOne(
   await adapter.provision?.(value, context);
 }
 
-async function ensureObjectStorageBucket(resource: S3Bucket): Promise<void> {
-  const {
-    CreateBucketCommand,
-    HeadBucketCommand,
-    S3Client,
-  } = await import("@aws-sdk/client-s3");
-  const client = new S3Client({
+async function objectStorageClient(resource: S3Bucket) {
+  const sdk = await import("@aws-sdk/client-s3");
+  const client = new sdk.S3Client({
     endpoint: resource.endpoint,
     region: resource.region,
     forcePathStyle: true,
@@ -271,10 +285,19 @@ async function ensureObjectStorageBucket(resource: S3Bucket): Promise<void> {
       secretAccessKey: resource.secretKey,
     },
   });
+  return { sdk, client };
+}
 
+/** True when the bucket exists; false for a definite "not found". */
+async function objectStorageBucketExists(
+  resource: S3Bucket,
+  client: Awaited<ReturnType<typeof objectStorageClient>>,
+): Promise<boolean> {
   try {
-    await client.send(new HeadBucketCommand({ Bucket: resource.bucket }));
-    return;
+    await client.client.send(
+      new client.sdk.HeadBucketCommand({ Bucket: resource.bucket }),
+    );
+    return true;
   } catch (caught) {
     const status = (caught as { $metadata?: { httpStatusCode?: number } })
       .$metadata?.httpStatusCode;
@@ -288,7 +311,15 @@ async function ensureObjectStorageBucket(resource: S3Bucket): Promise<void> {
         },
       );
     }
+    return false;
   }
+}
+
+async function ensureObjectStorageBucket(resource: S3Bucket): Promise<void> {
+  const storage = await objectStorageClient(resource);
+  const { client } = storage;
+  const { CreateBucketCommand } = storage.sdk;
+  if (await objectStorageBucketExists(resource, storage)) return;
 
   step("bucket", `creating ${resource.bucket}`);
   try {
@@ -311,7 +342,75 @@ async function ensureObjectStorageBucket(resource: S3Bucket): Promise<void> {
   }
 }
 
-function resolveEndpoint(
+/**
+ * Empty and delete a pruned worktree's bucket. A versioned bucket is refused:
+ * deleting current objects would leave prior versions behind and the bucket
+ * itself could not be removed.
+ */
+async function deprovisionObjectStorageBucket(
+  resource: S3Bucket,
+  dryRun: boolean,
+): Promise<ResourceDeprovisionResult> {
+  const storage = await objectStorageClient(resource);
+  const { client, sdk } = storage;
+  if (!(await objectStorageBucketExists(resource, storage))) {
+    return { status: "absent" };
+  }
+
+  try {
+    const versioning = await client.send(
+      new sdk.GetBucketVersioningCommand({ Bucket: resource.bucket }),
+    );
+    if (versioning.Status === "Enabled" || versioning.Status === "Suspended") {
+      return { status: "refused", detail: "bucket versioning is enabled" };
+    }
+  } catch (caught) {
+    // Some S3-compatible servers do not implement versioning at all.
+    if ((caught as { name?: string }).name !== "NotImplemented") throw caught;
+  }
+
+  const keys: string[] = [];
+  let bytes = 0;
+  let continuationToken: string | undefined;
+  do {
+    const page = await client.send(
+      new sdk.ListObjectsV2Command({
+        Bucket: resource.bucket,
+        ContinuationToken: continuationToken,
+      }),
+    );
+    for (const object of page.Contents ?? []) {
+      if (object.Key === undefined) continue;
+      keys.push(object.Key);
+      bytes += object.Size ?? 0;
+    }
+    continuationToken = page.IsTruncated ? page.NextContinuationToken : undefined;
+  } while (continuationToken);
+
+  const detail = `${keys.length} object(s)`;
+  if (dryRun) return { status: "would-remove", bytes, detail };
+
+  for (let index = 0; index < keys.length; index += 1_000) {
+    const deleted = await client.send(
+      new sdk.DeleteObjectsCommand({
+        Bucket: resource.bucket,
+        Delete: {
+          Objects: keys.slice(index, index + 1_000).map((Key) => ({ Key })),
+          Quiet: true,
+        },
+      }),
+    );
+    if ((deleted.Errors?.length ?? 0) > 0) {
+      throw new WorkTrellisError(
+        `Could not delete ${deleted.Errors!.length} object(s) from bucket "${resource.bucket}".`,
+      );
+    }
+  }
+  await client.send(new sdk.DeleteBucketCommand({ Bucket: resource.bucket }));
+  return { status: "removed", bytes, detail };
+}
+
+export function resolveResourceEndpoint(
   compose: ComposeContext,
   endpoint: ResourceEndpoint,
 ): ResolvedResourceEndpoint {

@@ -289,8 +289,10 @@ Then ask:
 The skill inspects the existing app, Compose files, package scripts, and
 environment contract before changing anything, and it keeps Compose, secrets,
 Portless, and Tailscale responsibilities in the right tools. On WorkTrellis
-0.4 it also inspects retained variants before changing machine infrastructure,
-and requires an explicit reconcile-or-fresh lineage decision.
+0.4 and newer it also inspects retained variants before changing machine
+infrastructure, and requires an explicit reconcile-or-fresh lineage decision.
+On 0.5 it reviews `worktrellis prune` dry runs and applies them only with your
+explicit authorization.
 
 </details>
 
@@ -359,6 +361,22 @@ Adapters carve worktree-specific slices out of shared endpoints:
 Adapters know protocols, not images. `postgresDatabase()` works against
 `postgres`, PostGIS, or any compatible server the project chooses.
 
+### Retiring worktrees
+
+Deleting a worktree does not delete what WorkTrellis provisioned for it. Review
+and reclaim it explicitly:
+
+```bash
+worktrellis prune        # dry run: what each deleted worktree still holds
+worktrellis prune --yes  # drop those databases, buckets, and records
+```
+
+`prune` drops only resources whose names WorkTrellis derived for that worktree,
+keeps anything with open connections or another owner, and never stops a
+shared stack. `doctor` warns when there is something to prune. Set
+`gc: { maxIdleDays: 30 }` to also select worktrees that still exist but have
+not been used for that long.
+
 ### Compose is the extension language
 
 Adding an arbitrary local dependency should never require a WorkTrellis
@@ -406,7 +424,8 @@ database adapter makes sense. A Gotenberg service adapter does not.
 | `env` | The resolved environment, with `--explain`, `--json`, or `--print <key>` | read only |
 | `exec -- <cmd>` | Run an executable with the resolved worktree environment | your command |
 | `run <script>` | Run a package script with the resolved worktree environment | your script |
-| `services <sub>` | `up`, `down`, `restart`, `status`, `logs`, `adopt`, `endpoint` | by subcommand |
+| `services <sub>` | `up`, `down`, `restart`, `status`, `logs`, `variants`, `reconcile`, `adopt`, `endpoint` | by subcommand |
+| `prune [--yes]` | Report, then with `--yes` remove, the databases, buckets, workspace stacks, and records of deleted or idle worktrees | dry run unless `--yes` |
 | `db <sub>` | `url`, `migrate`, `seed`, `reset` | by subcommand |
 | `self-check` | Verify the package stayed project agnostic | read only |
 
@@ -456,7 +475,7 @@ walking up from the current directory.
 | `criticalKeys` | no | Generated keys whose `.env` conflicts fail `doctor` |
 | `processPorts` | no | Additional deterministic foreground-process ports |
 | `url` | no | URL provider, wildcard behavior, and base app port |
-| `gc` | no | Retention policy for inactive workspace records |
+| `gc` | no | `maxIdleDays` lets `prune` also select idle worktrees |
 | `doctor` | no | Project-specific diagnostic checks |
 
 See the [configuration reference](docs/configuration.md) for the full schema,
@@ -608,8 +627,8 @@ definitions, port overrides, locks, logs, and the workspace index live in
 ## Versioning and stability
 
 The npm package follows [Semantic Versioning](https://semver.org/).
-`configVersion` is a separate integer protocol, and WorkTrellis 0.4 accepts
-only `configVersion: 3`.
+`configVersion` is a separate integer protocol, and WorkTrellis 0.4 and 0.5
+accept only `configVersion: 3`.
 
 - Additive configuration fields stay on the current version.
 - A breaking reinterpretation requires a new `configVersion` and a migration
