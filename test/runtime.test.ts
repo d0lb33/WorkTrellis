@@ -832,7 +832,9 @@ setInterval(() => {}, 1000);
         }
       }
     },
-    30_000,
+    // Three PowerShell process-tree inspections take about a minute on
+    // GitHub's Windows ARM runners.
+    120_000,
   );
 
   it(
